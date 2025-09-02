@@ -22,3 +22,10 @@ class BQ:
         if dtypes:
             df = df.astype(dtypes)
         return df
+
+    def to_bq(self, df: pd.DataFrame, table_id: str) -> None:
+        """
+        Write a pandas DataFrame to a BigQuery table.
+        """
+        job = self.client.load_table_from_dataframe(df, table_id)
+        job.result()
