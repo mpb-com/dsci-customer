@@ -9,7 +9,12 @@ class BQ:
         dotenv.load_dotenv()
         self.client = bigquery.Client(project=project_id or os.getenv("GCP_PROJECT_ID"))
 
-    def to_dataframe(self, query: str, job_config: bigquery.QueryJobConfig = None, dtypes: dict = None) -> pd.DataFrame:
+    def to_dataframe(
+        self,
+        query: str,
+        job_config: bigquery.QueryJobConfig = None,
+        dtypes: dict = None,
+    ) -> pd.DataFrame:
         """
         Execute a query and return the results as a pandas DataFrame.
         """

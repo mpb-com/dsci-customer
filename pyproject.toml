@@ -32,3 +32,8 @@ packages = ["src"]
 dev = [
     "ruff>=0.12.10",
 ]
+
+[tool.ruff]
+lint.ignore = [
+    "E"
+    ]
