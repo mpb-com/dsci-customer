@@ -1,6 +1,11 @@
 import pandas as pd
 import numpy as np
 from lifetimes import BetaGeoFitter, ParetoNBDFitter
+from sksurv.linear_model import CoxPHSurvivalAnalysis
+from sksurv.util import Surv
+from sksurv.ensemble import RandomSurvivalForest
+
+from .config import CUTOFF_DAYS
 
 
 class BaseModel:
@@ -161,3 +166,80 @@ class ParetoEmpiricalSingleTrainNoSingle(BaseModel):
         empirical_preds = self.empirical.predict_future_transactions(df, horizon)
         preds = np.where(df["frequency"] > 0, pareto_preds, empirical_preds)
         return pd.Series(preds, index=df.index)
+
+
+class CoxSurvivalModel(BaseModel):
+    def __init__(
+        self,
+    ):
+        self.name = f"CoxPH_{CUTOFF_DAYS}"
+        self.alive_cutoff_days = CUTOFF_DAYS
+        self.model = CoxPHSurvivalAnalysis()
+        self.fitted = False
+
+    def fit(self, df: pd.DataFrame) -> None:
+        y = Surv.from_dataframe("event_observed", "T", df)
+        X = df[["frequency", "recency", "monetary_value"]]
+
+        self.model.fit(X, y)
+        self.fitted = True
+
+    def p_alive(self, df: pd.DataFrame) -> pd.Series:
+        if not self.fitted:
+            raise ValueError("Model must be fitted before predicting.")
+
+        X = df[["frequency", "recency", "monetary_value"]]
+
+        surv_funcs = self.model.predict_survival_function(X)
+
+        # p_alive = S(t=days_since_last)
+        probs = np.array(
+            [
+                fn(t) if t <= fn.x[-1] else 0.0
+                for fn, t in zip(surv_funcs, df["days_since_last"])
+            ]
+        )
+        return pd.Series(probs, index=df.index)
+
+    def predict_future_transactions(self, df: pd.DataFrame, horizon: int) -> pd.Series:
+        p_alive = self.p_alive(df)
+        min_T = np.clip(df["T"].values, 30, None)
+        transaction_rate = df["frequency"].values / min_T
+        return pd.Series(p_alive * transaction_rate * horizon, index=df.index)
+
+
+class RandomSurvivalForestModel(BaseModel):
+    def __init__(self, alive_cutoff_days: int = CUTOFF_DAYS):
+        self.name = f"RSF_{alive_cutoff_days}"
+        self.alive_cutoff_days = alive_cutoff_days
+        self.model = RandomSurvivalForest(
+            n_estimators=100, min_samples_split=10, random_state=42
+        )
+        self.fitted = False
+
+    def fit(self, df: pd.DataFrame) -> None:
+        y = Surv.from_dataframe("event_observed", "T", df)
+        X = df[["frequency", "recency", "monetary_value"]]
+        self.model.fit(X, y)
+        self.fitted = True
+
+    def p_alive(self, df: pd.DataFrame) -> pd.Series:
+        if not self.fitted:
+            raise ValueError("Model must be fitted before predicting.")
+
+        X = df[["frequency", "recency", "monetary_value"]]
+        surv_funcs = self.model.predict_survival_function(X)
+
+        probs = np.array(
+            [
+                fn(t) if t <= fn.x[-1] else 0.0
+                for fn, t in zip(surv_funcs, df["days_since_last"])
+            ]
+        )
+        return pd.Series(probs, index=df.index)
+
+    def predict_future_transactions(self, df: pd.DataFrame, horizon: int) -> pd.Series:
+        p_alive = self.p_alive(df)
+        min_T = np.clip(df["T"].values, 30, None)
+        transaction_rate = df["frequency"].values / min_T
+        return pd.Series(p_alive * transaction_rate * horizon, index=df.index)

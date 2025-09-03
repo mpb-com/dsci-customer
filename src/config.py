@@ -5,6 +5,8 @@ root = Path(__file__).parent.parent
 DATA_DIR = root / "data"
 LOG_DIR = root / "logs"
 
+CUTOFF_DAYS = 90
+
 ACTIVE = "active"
 LAPSING = "lapsing"
 LOST = "lost"

@@ -4,6 +4,7 @@ from lifetimes.utils import summary_data_from_transaction_data
 from src.utils.bq import BQ
 from google.cloud import bigquery
 from .config import (
+    CUTOFF_DAYS,
     TRANSACTION_QUERY,
     CUSTOMER_DATA_QUERY,
     TRANSACTIONS_DATASET,
@@ -22,7 +23,7 @@ def label_predictions(probs, alive_min=0.6, lapsed_max=0.3):
     return labels
 
 
-def fetch_transactions():
+def save_transactions():
     """Fetch transaction data from BigQuery and save to parquet"""
     bq = BQ()
 
@@ -35,7 +36,7 @@ def fetch_transactions():
 
     print(f"Fetched {len(transactions)} transactions from {TRANSACTIONS_DATASET}")
 
-    return transactions
+    transactions.to_parquet(TRANSACTIONS_DATASET, index=False)
 
 
 def save_customer_data():
@@ -47,11 +48,11 @@ def save_customer_data():
     print(f"Saved {len(customer_data)} customer records to {CUSTOMER_DATA_DATASET}")
 
 
-def save_btyd_features(
-    transactions: pd.DataFrame,
-):
-    """Create BTYD features (frequency, recency, T) from transaction data"""
-    # Create summary data for BTYD models
+def save_btyd_features_with_survival(cutoff_days: int = CUTOFF_DAYS):
+    """Create BTYD and survival features (frequency, recency, T, monetary_value, days_since_last, event_observed)"""
+
+    transactions = pd.read_parquet(TRANSACTIONS_DATASET)
+
     summary = summary_data_from_transaction_data(
         transactions=transactions,
         customer_id_col="id",
@@ -59,24 +60,43 @@ def save_btyd_features(
         monetary_value_col="value",
     )
 
-    # Calculate days since last transaction
     max_date = transactions["txn_date"].max()
     last_transaction_date = transactions.groupby("id")["txn_date"].max()
+    first_transaction_date = transactions.groupby("id")["txn_date"].min()
+
     days_since_last = (max_date - last_transaction_date).dt.days
 
-    # Add days_since_last to summary
+    # Map back to summary
     summary["days_since_last"] = days_since_last.reindex(summary.index)
-
-    # Reset index to make customer_id a column
     summary = summary.reset_index()
     summary.rename(columns={"id": "customer_id"}, inplace=True)
 
-    int_cols = ["frequency", "recency", "T", "monetary_value", "days_since_last"]
+    # ✅ Correct survival label: churned = long inactivity
+    summary["event_observed"] = summary["days_since_last"] > cutoff_days
+
+    # Optional: derive cohort year
+    cohort_year = first_transaction_date.dt.year
+    summary["cohort_year"] = summary["customer_id"].map(cohort_year)
+
+    # Include duration explicitly
+    summary["duration"] = summary["T"]
+
+    # Cast
+    int_cols = [
+        "frequency",
+        "recency",
+        "T",
+        "monetary_value",
+        "days_since_last",
+        "duration",
+    ]
     for col in int_cols:
         if col in summary.columns:
             summary[col] = summary[col].astype("int32")
 
+    summary["event_observed"] = summary["event_observed"].astype("bool")
+
     summary.to_parquet(BTYD_FEATURES_DATASET, index=False)
 
-    print(f"Saved BTYD features to {BTYD_FEATURES_DATASET}")
+    print(f"Saved BTYD + survival features to {BTYD_FEATURES_DATASET}")
     print(f"No of customers: {summary.shape[0]}")
