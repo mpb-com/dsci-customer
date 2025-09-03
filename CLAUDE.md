@@ -67,3 +67,32 @@ Key thresholds and labels defined in `config.py`:
 - Individual experiments are in `experiments/` directory
 - Models follow a consistent interface defined in `BaseModel` class
 - Data loading and feature engineering utilities are centralized in `data.py`
+
+### Model Evaluation
+The evaluation framework in `eval.py` provides standardized metrics:
+
+**P_alive (Binary Classification) Metrics:**
+- `log_loss` - Cross-entropy loss (lower is better)
+- `brier_score` - Quadratic scoring rule (lower is better) 
+- `auc` - Area under ROC curve (higher is better)
+- `ece` - Expected Calibration Error (lower is better)
+- `concordance_index` - C-index for survival analysis (higher is better)
+
+**Future Transactions (Regression) Metrics:**
+- `mae` - Mean Absolute Error (lower is better)
+- `rmse` - Root Mean Square Error (lower is better)
+- `mape` - Mean Absolute Percentage Error (lower is better)
+- `poisson_deviance` - Poisson deviance (lower is better)
+
+**Key Evaluation Functions:**
+- `ModelEvaluator.compare_models()` - Compare all models with consistent metrics
+- `plot_all_calibrations()` - Transaction calibration plots in nx2 grid
+- `_plot_roc_curve()` - ROC curves with AUC, Brier, Log Loss, and ECE
+- `create_train_test_split()` - Proper temporal splitting without data leakage
+
+### Train/Test Split Guidelines
+Use `create_train_test_split()` for proper evaluation:
+- Temporal split prevents data leakage
+- Includes all customers with ≥1 calibration transaction (no selection bias)
+- Train set has no ground truth labels
+- Test set includes `y_true_txns` and `y_true_alive` for evaluation
