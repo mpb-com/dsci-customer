@@ -30,14 +30,13 @@ log = logging.getLogger(__name__)
 # Transactions before this date are not included in model training or prediction
 # Any customers who only transacted before this date will have defaults applied
 # Look at combine_predictions() for details
-DATE_CUTOFF = (
-    "2020-01-01"  
-)
+DATE_CUTOFF = "2020-01-01"
 
 
 @dataclass
 class CustomerStatus:
     """Customer status labels. Change as desired"""
+
     ACTIVE = "active"
     LAPSING = "lapsing"
     LOST = "lost"
@@ -167,7 +166,11 @@ class ParetoEmpiricalSingleTrainSplit:
     def p_alive(self, df: pd.DataFrame) -> pd.Series:
         pareto_probs = ParetoNBD.p_alive(self, df)
         empirical_probs = self.empirical.p_alive(df)
-        probs = np.where(df["frequency"] > TRANSACTION_EMPIRICAL_CUTOFF - 1, pareto_probs, empirical_probs)
+        probs = np.where(
+            df["frequency"] > TRANSACTION_EMPIRICAL_CUTOFF - 1,
+            pareto_probs,
+            empirical_probs,
+        )
         return pd.Series(probs, index=df.index)
 
     def customer_status(self, df: pd.DataFrame) -> pd.Series:
@@ -197,7 +200,7 @@ def fetch_transactions(bq: BQ, query=TRANSACTION_QUERY, date_cutoff=DATE_CUTOFF)
 
 def create_btyd_features(transactions: pd.DataFrame, training=False):
     """
-    Create BTYD and survival features: 
+    Create BTYD and survival features:
     (frequency, recency, T, days_since_last, excluded_from_training)
 
     If training is True, only include transactions not excluded from training.
@@ -244,6 +247,16 @@ def create_btyd_features(transactions: pd.DataFrame, training=False):
     return summary
 
 
+def _get_customer_status(p_alive: float) -> CustomerStatus:
+    """Determine customer status based on p_alive probability."""
+    if p_alive <= LAPSING_PROBABILITY_CUTOFF:
+        return CustomerStatus.LOST
+    elif p_alive < ACTIVE_PROBABILITY_CUTOFF:
+        return CustomerStatus.LAPSING
+    else:
+        return CustomerStatus.ACTIVE
+
+
 def combine_predictions(
     all_features: pd.DataFrame, predicted_features: pd.DataFrame
 ) -> pd.DataFrame:
@@ -256,7 +269,7 @@ def combine_predictions(
 
     max_T = predicted_features["T"].max()
     missing_customers["T"] = max_T
-    missing_customers["recency"] = max_T  
+    missing_customers["recency"] = max_T
     missing_customers["days_since_last"] = max_T
     missing_customers["frequency"] = 0
 
@@ -289,16 +302,6 @@ class DiagnosticsTracker:
         log.info(f"Total runtime: {total_time:.1f}s, Peak memory: {peak_memory:.1f}MB")
 
 
-def _get_customer_status(p_alive: float) -> CustomerStatus:
-    """Determine customer status based on p_alive probability."""
-    if p_alive <= LAPSING_PROBABILITY_CUTOFF:
-        return CustomerStatus.LOST
-    elif p_alive < ACTIVE_PROBABILITY_CUTOFF:
-        return CustomerStatus.LAPSING
-    else:
-        return CustomerStatus.ACTIVE
-
-
 def log_dataframe_stats(df: pd.DataFrame, name: str):
     """Log dataframe statistics in consistent format"""
     log.info(f"{name} with {df.shape[0]} rows")
@@ -329,7 +332,7 @@ def log_config_constants():
 # def plot_p_alive_vs_days_since_last(df: pd.DataFrame):
 #     """Plot p_alive against days_since_last"""
 #     import matplotlib.pyplot as plt
-    
+
 #     plt.figure(figsize=(10, 6))
 #     plt.scatter(df["days_since_last"], df["p_alive"], alpha=8000 / len(df), s=1)
 #     plt.xlabel("Days Since Last Transaction")
