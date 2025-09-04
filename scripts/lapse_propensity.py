@@ -27,13 +27,17 @@ import os
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
+# Transactions before this date are not included in model training or prediction
+# Any customers who only transacted before this date will have defaults applied
+# Look at combine_predictions() for details
 DATE_CUTOFF = (
-    "2020-01-01"  # Transactions before this date are not included in model training or prediction
+    "2020-01-01"  
 )
 
 
 @dataclass
 class CustomerStatus:
+    """Customer status labels. Change as desired"""
     ACTIVE = "active"
     LAPSING = "lapsing"
     LOST = "lost"
@@ -41,13 +45,14 @@ class CustomerStatus:
 
 ACTIVE_PROBABILITY_CUTOFF = 0.6
 LAPSING_PROBABILITY_CUTOFF = 0.3
-
 ALIVE_CUTOFF_DAYS = 270
 LAPSING_CUTOFF_DAYS = 540
 
+# Don't touch!
 PARETO_PENALIZER = 0.001
 TRANSACTION_EMPIRICAL_CUTOFF = 1
 
+# Update these!
 PROJECT_ID = "mpb-data-science-dev-ab-602d"
 DATABASE_NAME = "sandbox"
 TABLE_NAME = "customer_ltv_analysis"
