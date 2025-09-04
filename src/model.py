@@ -152,7 +152,7 @@ class BGNBDEmpiricalSingleTrainNoSingle(BaseModel):
         self.name = f"BGNBDESTNS_{alive_cutoff_days}_{lapsing_cutoff_days}"
 
     def fit(self, df: pd.DataFrame) -> None:
-        BGNBD.fit(self, df[df["frequency"] > 1])
+        BGNBD.fit(self, df[df["frequency"] > 0])
         self.empirical.fit(df)
 
     def p_alive(self, df: pd.DataFrame) -> pd.Series:
@@ -176,7 +176,7 @@ class ParetoEmpiricalSingleTrainNoSingle(BaseModel):
         self.name = f"ParetoESTNS_{alive_cutoff_days}_{lapsing_cutoff_days}"
 
     def fit(self, df: pd.DataFrame) -> None:
-        ParetoNBD.fit(self, df[df["frequency"] > 1])
+        ParetoNBD.fit(self, df[df["frequency"] > 0])
         self.empirical.fit(df)
 
     def p_alive(self, df: pd.DataFrame) -> pd.Series:

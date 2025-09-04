@@ -29,17 +29,17 @@ class ModelEvaluator:
     def evaluate_p_alive(self, y_true, y_prob, model_name):
         from sklearn.metrics import roc_curve, auc
         from sklearn.calibration import calibration_curve
-        
+
         # Calculate ROC metrics
         fpr, tpr, _ = roc_curve(y_true, y_prob)
         roc_auc = auc(fpr, tpr)
-        
+
         # Calculate Expected Calibration Error (ECE)
         fraction_of_positives, mean_predicted_value = calibration_curve(
             y_true, y_prob, n_bins=10
         )
         ece = np.mean(np.abs(fraction_of_positives - mean_predicted_value))
-        
+
         metrics = {
             "log_loss": log_loss(y_true, y_prob),
             "brier_score": brier_score_loss(y_true, y_prob),
@@ -255,7 +255,6 @@ class ModelEvaluator:
 
         plt.tight_layout()
         plt.show()
-
 
     def plot_all_calibrations(self, df, y_true_txns):
         """Plot calibration and ROC curves for all models in separate 2x2 grids"""
