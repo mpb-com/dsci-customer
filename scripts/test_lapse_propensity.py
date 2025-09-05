@@ -1,8 +1,8 @@
 """
 Test Script for Customer Lapse Propensity Analysis
 
-Tests the production lapse propensity model on a sample dataset using proper temporal
-train/test splitting. Uses lifetimes calibration_and_holdout_data for evaluation.
+Tests the production lapse propensity model using proper temporal train/test splitting.
+Uses lifetimes calibration_and_holdout_data for evaluation.
 
 Usage: python scripts/test_lapse_propensity.py
 """
@@ -19,6 +19,9 @@ from sklearn.metrics import log_loss, brier_score_loss, roc_auc_score, roc_curve
 from lifetimes.utils import calibration_and_holdout_data
 import matplotlib.pyplot as plt
 
+# Add src to path for imports
+sys.path.append(str(Path(__file__).parent.parent))
+
 from src.config import DATA_DIR
 from scripts.lapse_propensity import (
     BQ,
@@ -27,16 +30,12 @@ from scripts.lapse_propensity import (
     log_dataframe_stats,
     log_config_constants,
     DiagnosticsTracker,
-    DATE_CUTOFF,
     PROJECT_ID,
     DATABASE_NAME,
 )
 
-# Add src to path for imports
-sys.path.append(str(Path(__file__).parent.parent))
-
 # Test configuration
-TEST_SAMPLE_SIZE = 10000000  # Sample size for testing
+TEST_SAMPLE_SIZE = 1000000  # Sample size for testing
 TEST_HORIZON_DAYS = 365  # Test period for evaluation
 TEST_TABLE_NAME = "customer_ltv_analysis_test"
 CALIBRATION_END_DATE = "2024-01-01"  # End of training period
@@ -46,8 +45,7 @@ log = logging.getLogger(__name__)
 
 
 def fetch_sample_transactions(bq: BQ, sample_size: int, observation_end_date: str):
-    """Fetch sample transactions for testing"""
-
+    """Fetch sample transactions for testing with date limit and sampling"""
     sample_query = f"""
     WITH sampled_customers AS (
         SELECT DISTINCT customer_id 
@@ -58,9 +56,7 @@ def fetch_sample_transactions(bq: BQ, sample_size: int, observation_end_date: st
         LIMIT {sample_size}
     )
     SELECT customer_id, 
-    DATETIME(transaction_completed_datetime) as txn_date,
-    CASE when DATE(transaction_completed_datetime) < @date_cutoff then 1 
-    else 0 end as excluded_from_training
+    DATETIME(transaction_completed_datetime) as txn_date
     FROM `mpb-data-science-dev-ab-602d.dsci_daw.STV` 
     WHERE DATE(transaction_completed_datetime) <= @observation_end_date
     AND transaction_completed_datetime is not null
@@ -72,21 +68,18 @@ def fetch_sample_transactions(bq: BQ, sample_size: int, observation_end_date: st
             bigquery.ScalarQueryParameter(
                 "observation_end_date", "DATE", observation_end_date
             ),
-            bigquery.ScalarQueryParameter("date_cutoff", "DATE", DATE_CUTOFF),
         ]
     )
 
     dtypes = {
         "customer_id": "int32",
         "txn_date": "datetime64[ns]",
-        "excluded_from_training": "int8",
     }
 
     transactions = bq.to_dataframe(sample_query, job_config=job_config, dtypes=dtypes)
     log.info(
         f"Fetched {len(transactions)} transactions for {transactions['customer_id'].nunique()} customers"
     )
-
     return transactions
 
 
@@ -121,10 +114,10 @@ def create_temporal_train_test_split(
     calibration_transactions = transactions[
         transactions["txn_date"] <= calibration_end
     ].copy()
-    train_features = create_btyd_features(calibration_transactions, training=True)
+    train_features = create_btyd_features(calibration_transactions)
 
     # Create test features (calibration period features for prediction)
-    test_features = create_btyd_features(calibration_transactions, training=False)
+    test_features = create_btyd_features(calibration_transactions)
 
     # Merge with holdout data for ground truth
     test_features = test_features.merge(
@@ -350,40 +343,47 @@ def test_production_model():
     train_features = split_data["train_features"]
     test_features = split_data["test_features"]
 
-    # Filter for reasonable ranges (same as comparison notebook)
-    log.info("Filtering features for reasonable ranges")
-    train_filtered = train_features.copy()
-
-    test_filtered = test_features.copy()
-
-    log.info(
-        f"Filtered to {len(train_filtered)} training and {len(test_filtered)} test customers"
-    )
-
     # Train production model
     log.info("Training production model")
     model = ParetoEmpiricalSingleTrainSplit()
-    model.fit(train_filtered)
+    model.fit(train_features)
     diagnostics.checkpoint("Model training")
 
     # Generate predictions
     log.info("Generating predictions")
-    test_filtered["p_alive"] = model.p_alive(test_filtered)
-    test_filtered["customer_status"] = model.customer_status(test_filtered)
-    
+    test_features["p_alive"] = model.p_alive(test_features)
+    test_features["customer_status"] = model.customer_status(test_features)
+
     # Save test results to parquet
-    test_filtered.to_parquet(Path(DATA_DIR) / "test_results.parquet")
+    test_features.to_parquet(Path(DATA_DIR) / "test_results.parquet")
     log.info("Saved test results to test_results.parquet")
-    
+
     diagnostics.checkpoint("Prediction generation")
 
     # Evaluate model
     log.info("Evaluating model performance")
-    metrics = evaluate_model_predictions(test_filtered)
+    metrics = evaluate_model_predictions(test_features)
+    
+    # Save metrics to txt file
+    metrics_path = Path(__file__).parent / "test_metrics.txt"
+    with open(metrics_path, 'w') as f:
+        f.write("LAPSE PROPENSITY MODEL TEST METRICS\n")
+        f.write("=" * 40 + "\n\n")
+        f.write(f"Dataset size: {metrics['n_customers']} customers\n")
+        f.write(f"Baseline (% active): {metrics['baseline_active_rate']:.1%}\n\n")
+        f.write("Classification Metrics:\n")
+        f.write(f"  AUC: {metrics['auc']:.4f}\n")
+        f.write(f"  Log Loss: {metrics['log_loss']:.4f}\n")
+        f.write(f"  Brier Score: {metrics['brier_score']:.4f}\n")
+        f.write(f"  Accuracy: {metrics['accuracy']:.4f}\n")
+        f.write(f"  Precision: {metrics['precision']:.4f}\n")
+        f.write(f"  Recall: {metrics['recall']:.4f}\n")
+    log.info(f"Saved metrics to {metrics_path}")
+    
     diagnostics.checkpoint("Model evaluation")
 
     # Log feature statistics
-    log_dataframe_stats(test_filtered, "Final test results")
+    log_dataframe_stats(test_features, "Final test results")
 
     # Save test results
     test_table_id = f"{PROJECT_ID}.{DATABASE_NAME}.{TEST_TABLE_NAME}"
@@ -402,7 +402,7 @@ def test_production_model():
         "y_true_txns",
         "frequency_holdout",
     ]
-    test_results = test_filtered[save_columns].copy()
+    test_results = test_features[save_columns].copy()
     bq.to_bq(test_results, test_table_id)
     diagnostics.checkpoint("Results saving")
 
@@ -410,7 +410,7 @@ def test_production_model():
 
     return {
         "metrics": metrics,
-        "test_results": test_filtered,
+        "test_results": test_features,
         "model": model,
     }
 

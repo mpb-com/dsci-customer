@@ -27,11 +27,6 @@ import os
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-# Transactions before this date are not included in model training or prediction
-# Any customers who only transacted before this date will have defaults applied
-# Look at combine_predictions() for details
-DATE_CUTOFF = "2015-01-01"
-
 
 @dataclass
 class CustomerStatus:
@@ -50,7 +45,7 @@ LAPSING_CUTOFF_DAYS = 540
 # Don't touch!
 PARETO_PENALIZER = 0.001
 TRANSACTION_EMPIRICAL_CUTOFF = 1
-MAX_FREQUENCY_CUTOFF = 100 # Higher than this and we get numerical issues
+MAX_FREQUENCY_CUTOFF = 100  # Higher than this and we get numerical issues
 
 # Update these!
 PROJECT_ID = "mpb-data-science-dev-ab-602d"
@@ -60,9 +55,7 @@ TABLE_NAME = "customer_ltv_analysis"
 
 TRANSACTION_QUERY = """
     SELECT customer_id, 
-    DATETIME(transaction_completed_datetime) as txn_date,
-    CASE when DATE(transaction_completed_datetime) < @date_cutoff then 1 
-    else 0 end as excluded_from_training
+    DATETIME(transaction_completed_datetime) as txn_date
     FROM `mpb-data-science-dev-ab-602d.dsci_daw.STV` 
     WHERE transaction_completed_datetime is not null
     """
@@ -167,10 +160,10 @@ class ParetoEmpiricalSingleTrainSplit:
     def p_alive(self, df: pd.DataFrame) -> pd.Series:
         pareto_probs = ParetoNBD.p_alive(self, df)
         empirical_probs = self.empirical.p_alive(df)
-        
+
         # Handle NaN values from Pareto model by falling back to empirical
         pareto_probs = pareto_probs.fillna(empirical_probs)
-        
+
         probs = np.where(
             df["frequency"] > TRANSACTION_EMPIRICAL_CUTOFF - 1,
             pareto_probs,
@@ -184,40 +177,24 @@ class ParetoEmpiricalSingleTrainSplit:
 
 
 # --- Data Processing --------------------------------------------------------
-def fetch_transactions(bq: BQ, query=TRANSACTION_QUERY, date_cutoff=DATE_CUTOFF):
-    """Fetch transaction data from BigQuery and save to parquet"""
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=[
-            bigquery.ScalarQueryParameter("date_cutoff", "DATE", date_cutoff)
-        ]
-    )
+def fetch_transactions(bq: BQ, query=TRANSACTION_QUERY):
+    """Fetch transaction data from BigQuery"""
     dtypes = {
         "customer_id": "int32",
         "txn_date": "datetime64[ns]",
-        "excluded_from_training": "int8",
     }
 
-    transactions = bq.to_dataframe(query, job_config=job_config, dtypes=dtypes)
+    transactions = bq.to_dataframe(query, dtypes=dtypes)
     log.info(f"Fetched {len(transactions)} transactions")
 
     return transactions
 
 
-def create_btyd_features(transactions: pd.DataFrame, training=False):
+def create_btyd_features(transactions: pd.DataFrame):
     """
-    Create BTYD and survival features:
-    (frequency, recency, T, days_since_last, excluded_from_training)
-
-    If training is True, only include transactions not excluded from training.
+    Create BTYD features: frequency, recency, T, days_since_last
     """
-
-    if training:
-        _transactions = transactions[transactions["excluded_from_training"] == 0].copy()
-        log.info(
-            f"Using {len(_transactions)} transactions for training after applying cutoff"
-        )
-    else:
-        _transactions = transactions.copy()
+    _transactions = transactions.copy()
 
     summary = summary_data_from_transaction_data(
         transactions=_transactions,
@@ -235,8 +212,12 @@ def create_btyd_features(transactions: pd.DataFrame, training=False):
     # Cap frequency to prevent numerical issues
     high_freq_count = (summary["frequency"] > MAX_FREQUENCY_CUTOFF).sum()
     if high_freq_count > 0:
-        summary.loc[summary["frequency"] > MAX_FREQUENCY_CUTOFF, "frequency"] = MAX_FREQUENCY_CUTOFF
-        log.info(f"Capped {high_freq_count} customers with frequency > {MAX_FREQUENCY_CUTOFF}")
+        summary.loc[summary["frequency"] > MAX_FREQUENCY_CUTOFF, "frequency"] = (
+            MAX_FREQUENCY_CUTOFF
+        )
+        log.info(
+            f"Capped {high_freq_count} customers with frequency > {MAX_FREQUENCY_CUTOFF}"
+        )
 
     # Cast to int32 to save memory
     int_cols = [
@@ -266,27 +247,6 @@ def _get_customer_status(p_alive: float) -> CustomerStatus:
         return CustomerStatus.LAPSING
     else:
         return CustomerStatus.ACTIVE
-
-
-def combine_predictions(
-    all_features: pd.DataFrame, predicted_features: pd.DataFrame
-) -> pd.DataFrame:
-    """Combine predictions with missing customers assigned p_alive=0 and status=lost"""
-    missing_customers = all_features[
-        ~all_features["customer_id"].isin(predicted_features["customer_id"])
-    ].copy()
-    missing_customers["p_alive"] = 0.0
-    missing_customers["customer_status"] = CustomerStatus.LOST
-
-    max_T = predicted_features["T"].max()
-    missing_customers["T"] = max_T
-    missing_customers["recency"] = max_T
-    missing_customers["days_since_last"] = max_T
-    missing_customers["frequency"] = 0
-
-    return pd.concat([predicted_features, missing_customers], ignore_index=True)[
-        FINAL_COLUMNS
-    ]
 
 
 # --- Utilities --------------------------------------------------------------
@@ -337,7 +297,7 @@ def log_config_constants():
     log.info(f"  LAPSING_CUTOFF_DAYS: {LAPSING_CUTOFF_DAYS}")
     log.info(f"  PARETO_PENALIZER: {PARETO_PENALIZER}")
     log.info(f"  TRANSACTION_EMPIRICAL_CUTOFF: {TRANSACTION_EMPIRICAL_CUTOFF}")
-    log.info(f"  DATE_CUTOFF: {DATE_CUTOFF}")
+    log.info(f"  MAX_FREQUENCY_CUTOFF: {MAX_FREQUENCY_CUTOFF}")
 
 
 # --- Main -------------------------------------------------------------------
@@ -350,21 +310,20 @@ def main():
     # Fetch and process data
     log.info("Fetching transactions and calculating features")
     transactions = fetch_transactions(bq)
-    all_features = create_btyd_features(transactions)
-    train_features = create_btyd_features(transactions, training=True)
+    features = create_btyd_features(transactions)
 
     # Train model
     log.info("Fitting model")
     model = ParetoEmpiricalSingleTrainSplit()
-    model.fit(train_features)
+    model.fit(features)
 
     # Generate predictions
     log.info("Calculating probabilities and customer status")
-    train_features["p_alive"] = model.p_alive(train_features)
-    train_features["customer_status"] = model.customer_status(train_features)
+    features["p_alive"] = model.p_alive(features).round(2)
+    features["customer_status"] = model.customer_status(features)
 
-    # Combine with customers who only transacted before the cutoff date
-    final_features = combine_predictions(all_features, train_features)
+    # Select final columns
+    final_features = features[FINAL_COLUMNS]
 
     # Log results and config
     log_dataframe_stats(final_features, "Final results")
