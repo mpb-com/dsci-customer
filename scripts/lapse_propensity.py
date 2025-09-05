@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 # Transactions before this date are not included in model training or prediction
 # Any customers who only transacted before this date will have defaults applied
 # Look at combine_predictions() for details
-DATE_CUTOFF = "2020-01-01"
+DATE_CUTOFF = "2015-01-01"
 
 
 @dataclass
@@ -50,6 +50,7 @@ LAPSING_CUTOFF_DAYS = 540
 # Don't touch!
 PARETO_PENALIZER = 0.001
 TRANSACTION_EMPIRICAL_CUTOFF = 1
+MAX_FREQUENCY_CUTOFF = 100 # Higher than this and we get numerical issues
 
 # Update these!
 PROJECT_ID = "mpb-data-science-dev-ab-602d"
@@ -166,6 +167,10 @@ class ParetoEmpiricalSingleTrainSplit:
     def p_alive(self, df: pd.DataFrame) -> pd.Series:
         pareto_probs = ParetoNBD.p_alive(self, df)
         empirical_probs = self.empirical.p_alive(df)
+        
+        # Handle NaN values from Pareto model by falling back to empirical
+        pareto_probs = pareto_probs.fillna(empirical_probs)
+        
         probs = np.where(
             df["frequency"] > TRANSACTION_EMPIRICAL_CUTOFF - 1,
             pareto_probs,
@@ -226,6 +231,12 @@ def create_btyd_features(transactions: pd.DataFrame, training=False):
     summary["days_since_last"] = days_since_last.reindex(summary.index)
 
     summary = summary.reset_index()
+
+    # Cap frequency to prevent numerical issues
+    high_freq_count = (summary["frequency"] > MAX_FREQUENCY_CUTOFF).sum()
+    if high_freq_count > 0:
+        summary.loc[summary["frequency"] > MAX_FREQUENCY_CUTOFF, "frequency"] = MAX_FREQUENCY_CUTOFF
+        log.info(f"Capped {high_freq_count} customers with frequency > {MAX_FREQUENCY_CUTOFF}")
 
     # Cast to int32 to save memory
     int_cols = [
@@ -329,19 +340,6 @@ def log_config_constants():
     log.info(f"  DATE_CUTOFF: {DATE_CUTOFF}")
 
 
-# def plot_p_alive_vs_days_since_last(df: pd.DataFrame):
-#     """Plot p_alive against days_since_last"""
-#     import matplotlib.pyplot as plt
-
-#     plt.figure(figsize=(10, 6))
-#     plt.scatter(df["days_since_last"], df["p_alive"], alpha=8000 / len(df), s=1)
-#     plt.xlabel("Days Since Last Transaction")
-#     plt.ylabel("P(Alive)")
-#     plt.title("Customer Probability Alive vs Days Since Last Transaction")
-#     plt.grid(True, alpha=0.3)
-#     plt.show()
-
-
 # --- Main -------------------------------------------------------------------
 def main():
     log.info("Starting lapse propensity model")
@@ -367,8 +365,6 @@ def main():
 
     # Combine with customers who only transacted before the cutoff date
     final_features = combine_predictions(all_features, train_features)
-
-    # plot_p_alive_vs_days_since_last(final_features)
 
     # Log results and config
     log_dataframe_stats(final_features, "Final results")
