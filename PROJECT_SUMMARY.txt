@@ -1,0 +1,120 @@
+Customer Lapse Propensity Analysis: Investigation Summary and Future Directions
+
+Introduction
+
+This document summarizes the comprehensive investigation into customer lapse propensity modeling conducted for MPB's customer lifetime value analysis. The project aimed to develop a robust system for classifying customers as active, lapsing, or lost based on their transaction behavior in an infrequent purchase context.
+
+Background and Requirements
+
+The business requirement was clear: create a single categorical value against each customer record indicating their propensity to lapse. This needed to be reproducible and automated, serving different use cases including transactional focus and behavioral platform engagement. Previously, Theta had used a 5-year prediction horizon with probability thresholds (Lost ≤ 0.3, Lapsing 0.3-0.6, Active > 0.6) and predicted both p_alive and n_transactions.
+
+Experimental Journey
+
+Initial Exploration (main.ipynb)
+The investigation began with exploring multiple modeling approaches documented in the main notebook. Five key options were identified:
+- Rule-based segmentation using purchase frequency vs time since last transaction
+- Cohort-based analysis comparing individuals to acquisition cohort behavior
+- BTYD modeling with the lifetimes package (requiring at least 2 transactions)
+- BTYD with covariates including seasonality and cohort effects
+- Survival analysis using lifelines and scikit-survival packages
+
+The data sources were established: legacy Theta datasets, Bloomreach SCV for customer aggregations, STV for transaction details, and LIV for product information. Initial exploration revealed about 10 years of data availability.
+
+Experimental Development Phase
+Through systematic experimentation in the experiments/ directory, several critical insights emerged:
+
+The lifetimes package, while foundational for BTYD modeling, proved to have limitations and occasional bugs. Initial model fits using plot_history_alive() showed reasonable results, though model fit plots suggested overprediction issues. The Modified BGF was inconsistent, while ParetoNBDFitter demonstrated superior performance, especially when removing pre-2020 data which appeared sparse and unreliable.
+
+A crucial decision point emerged regarding single-transaction customers. The model could estimate CLV assuming they were alive, but excluding them from training proved essential. Visual analysis clearly showed that single-transaction customers created significant modeling challenges and should be handled separately.
+
+Model Comparison and Evaluation (experiments/comparison.ipynb)
+The comparison notebook became the testing ground for multiple modeling approaches. Eight different models were systematically evaluated:
+- BGNBD and ParetoNBD (pure BTYD approaches)
+- Empirical models using recency-based decay
+- Hybrid approaches combining BTYD and empirical methods
+- Cox survival models for time-to-event analysis
+
+The evaluation framework established comprehensive metrics including log loss, Brier score, AUC, and Expected Calibration Error for probability predictions, plus MAE, RMSE, MAPE, and Poisson deviance for transaction count predictions. Proper temporal train/test splitting was implemented using create_train_test_split() to prevent data leakage.
+
+This experimental phase revealed that hybrid models, particularly ParetoEmpiricalSingleTrainSplit, provided the best balance of performance and interpretability. The approach used Pareto/NBD for customers with multiple transactions and empirical decay models for single-transaction customers.
+
+Production Implementation Challenges
+
+Transitioning from experimental notebooks to production scripts revealed several critical issues:
+
+Data Type Consistency
+BigQuery integration required careful attention to data types. Initial TIMESTAMP vs DATETIME conflicts were resolved by standardizing on DATE types with explicit DATE() function calls. This seemingly minor issue caused significant query failures and required systematic debugging.
+
+Numerical Stability Issues
+The most significant challenge emerged when comparing production performance to test results. Production scripts were extremely slow and generated implausibly high p_alive values. Systematic investigation revealed that test scripts included frequency filtering (frequency < 100, recency < 5000, T < 5000) that was absent in production.
+
+This filtering wasn't just about performance—it was essential for numerical stability. The lifetimes package's Pareto/NBD implementation suffered from numerical instability when customers had extremely high frequency values, particularly in edge cases where recency equaled T. The solution involved implementing frequency capping at MAX_FREQUENCY_CUTOFF = 100 during data preparation, plus NaN fallback handling where Pareto predictions failed.
+
+Architecture Simplification
+Initial implementations included complex DATE_CUTOFF logic intended to handle data quality issues. However, once the frequency capping solution was identified, this proved unnecessary and was removed, significantly simplifying the codebase.
+
+Technical Lessons Learned
+
+Model Robustness
+The investigation highlighted the importance of handling edge cases in probabilistic models. The lifetimes package, while powerful, required careful preprocessing to ensure numerical stability. Frequency capping and NaN handling became essential components of the production pipeline.
+
+Evaluation Methodology
+Proper temporal evaluation proved crucial. Using lifetimes' calibration_and_holdout_data ensured legitimate train/test splits that respected the time series nature of customer behavior. This prevented the data leakage that could make models appear more accurate than they actually were.
+
+Production Considerations
+The gap between experimental code and production requirements was substantial. Issues like BigQuery integration, memory management, data type consistency, and numerical edge cases only emerged when scaling to the full customer base.
+
+Current State
+
+The final production system implements a ParetoEmpiricalSingleTrainSplit model that:
+- Uses Pareto/NBD for customers with frequency > 1
+- Falls back to empirical decay models for single transactions
+- Handles numerical edge cases through frequency capping and NaN fallback
+- Outputs probabilities rounded to 2 decimal places
+- Classifies customers as active (>0.6), lapsing (0.3-0.6), or lost (≤0.3)
+
+The evaluation framework provides comprehensive testing through temporal train/test splits with multiple performance metrics and visualization capabilities.
+
+Future Research Directions
+
+Model Enhancement Opportunities
+The current model could benefit from incorporating additional customer characteristics. Market segmentation, cohort effects, and seasonal patterns showed promise in early analysis but weren't fully integrated. Product preference patterns (cameras vs lenses) and engagement metrics beyond transactions could improve prediction accuracy.
+
+Advanced modeling approaches deserve exploration. Hierarchical models that vary by customer segment, time-varying coefficients that adapt to market changes, and multi-state models that capture reactivation patterns could provide more nuanced insights.
+
+Methodological Improvements
+The evaluation framework could be enhanced with multiple temporal splits for more robust validation. Cross-validation across different time periods and stratified evaluation by customer segments would provide confidence in model generalizability.
+
+Calibration analysis became increasingly important as the business relied more heavily on probability outputs. Reliability diagrams, temperature scaling, and segment-specific calibration assessment could improve the practical utility of predictions.
+
+Business Application Development
+The model outputs enable sophisticated customer lifecycle management. Targeted retention campaigns, personalized communication timing, and product recommendations based on lapse risk represent immediate opportunities. Integration with existing marketing automation platforms could automate intervention strategies.
+
+Revenue optimization applications include CLV prediction integration, optimal intervention timing determination, and resource allocation based on retention probability. Developing ROI frameworks for retention interventions would demonstrate business value.
+
+Technical Infrastructure Needs
+Operational improvements include automated model retraining pipelines, data drift detection, and performance monitoring dashboards. A/B testing frameworks for model updates would enable continuous improvement while managing risk.
+
+Scalability considerations include incremental model updates for new data, distributed processing capabilities, and real-time scoring infrastructure. These would support broader organizational adoption and more sophisticated use cases.
+
+Script Usage Instructions
+
+Production Model (scripts/lapse_propensity.py)
+Execute the production model with:
+python scripts/lapse_propensity.py
+
+This script processes the entire customer base, calculating lapse propensity scores and customer status classifications. It requires BigQuery access and outputs results to mpb-data-science-dev-ab-602d.sandbox.customer_ltv_analysis. The script includes comprehensive logging and performance monitoring.
+
+Model Evaluation (scripts/test_lapse_propensity.py)
+Test the production model with:
+python scripts/test_lapse_propensity.py
+
+This script evaluates model performance using proper temporal train/test splitting on a sample of 1 million customers. It generates evaluation plots (model_evaluation_plots.png), saves detailed metrics (test_metrics.txt), and creates a test results dataset (test_results.parquet) for further analysis.
+
+Both scripts require dependencies specified in scripts/lapse_propensity_requirements.txt and use uv for dependency management with Python 3.12+.
+
+Conclusion
+
+This investigation demonstrated the complexity of translating academic BTYD modeling approaches into robust production systems. The journey from experimental notebooks to production scripts revealed numerous technical challenges that aren't apparent in research contexts. The final system represents a practical balance between theoretical rigor and operational requirements, providing a foundation for sophisticated customer lifecycle management while maintaining the flexibility to incorporate future enhancements.
+
+The comprehensive experimental framework developed during this project provides a solid foundation for future research and development. The combination of proper evaluation methodology, robust production implementation, and clear documentation of lessons learned positions the organization to continue advancing its customer analytics capabilities.

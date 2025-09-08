@@ -1,13 +1,13 @@
 LAPSE PROPENSITY MODEL TEST METRICS
 ========================================
 
-Dataset size: 781168 customers
+Dataset size: 780736 customers
 Baseline (% active): 13.3%
 
 Classification Metrics:
-  AUC: 0.7593
-  Log Loss: 0.8185
-  Brier Score: 0.2459
-  Accuracy: 0.6492
-  Precision: 0.2395
+  AUC: 0.7595
+  Log Loss: 0.8172
+  Brier Score: 0.2454
+  Accuracy: 0.6497
+  Precision: 0.2394
   Recall: 0.7538

@@ -18,9 +18,6 @@ from google.cloud import bigquery
 import dotenv
 from lifetimes.utils import summary_data_from_transaction_data
 import logging
-import time
-import psutil
-import os
 
 
 # --- Config -----------------------------------------------------------------
@@ -157,12 +154,23 @@ class ParetoEmpiricalSingleTrainSplit:
         ParetoNBD.fit(self, df_train)
         self.empirical.fit()
 
+    def _handle_nan_fallback(
+        self, pareto_probs: pd.Series, empirical_probs: pd.Series
+    ) -> pd.Series:
+        """Handle NaN values from Pareto model by falling back to empirical predictions"""
+        nan_count = pareto_probs.isnull().sum()
+        if nan_count > 0:
+            log.info(
+                f"Found {nan_count} NaN predictions from Pareto model, falling back to empirical"
+            )
+        return pareto_probs.fillna(empirical_probs)
+
     def p_alive(self, df: pd.DataFrame) -> pd.Series:
         pareto_probs = ParetoNBD.p_alive(self, df)
         empirical_probs = self.empirical.p_alive(df)
 
         # Handle NaN values from Pareto model by falling back to empirical
-        pareto_probs = pareto_probs.fillna(empirical_probs)
+        pareto_probs = self._handle_nan_fallback(pareto_probs, empirical_probs)
 
         probs = np.where(
             df["frequency"] > TRANSACTION_EMPIRICAL_CUTOFF - 1,
@@ -250,29 +258,6 @@ def _get_customer_status(p_alive: float) -> CustomerStatus:
 
 
 # --- Utilities --------------------------------------------------------------
-class DiagnosticsTracker:
-    def __init__(self):
-        self.start_time = time.time()
-        self.process = psutil.Process(os.getpid())
-        self.checkpoints = []
-
-    def checkpoint(self, name: str):
-        current_time = time.time()
-        memory_mb = self.process.memory_info().rss / 1024 / 1024
-        elapsed = current_time - self.start_time
-
-        self.checkpoints.append(
-            {"name": name, "elapsed_s": elapsed, "memory_mb": memory_mb}
-        )
-
-        log.info(f"[{name}] Runtime: {elapsed:.1f}s, Memory: {memory_mb:.1f}MB")
-
-    def summary(self):
-        total_time = time.time() - self.start_time
-        peak_memory = max(c["memory_mb"] for c in self.checkpoints)
-        log.info(f"Total runtime: {total_time:.1f}s, Peak memory: {peak_memory:.1f}MB")
-
-
 def log_dataframe_stats(df: pd.DataFrame, name: str):
     """Log dataframe statistics in consistent format"""
     log.info(f"{name} with {df.shape[0]} rows")
@@ -304,8 +289,6 @@ def log_config_constants():
 def main():
     log.info("Starting lapse propensity model")
     bq = BQ()
-    diagnostics = DiagnosticsTracker()
-    diagnostics.checkpoint("Initialization")
 
     # Fetch and process data
     log.info("Fetching transactions and calculating features")
@@ -331,9 +314,6 @@ def main():
 
     # Save results
     bq.to_bq(final_features, f"{PROJECT_ID}.{DATABASE_NAME}.{TABLE_NAME}")
-
-    diagnostics.checkpoint("End")
-    diagnostics.summary()
     log.info("Lapse propensity model completed and data saved to BigQuery")
 
 

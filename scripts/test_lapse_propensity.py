@@ -11,7 +11,9 @@ import logging
 import sys
 from pathlib import Path
 from datetime import datetime, timedelta
-
+import time
+import psutil
+import os
 import pandas as pd
 import numpy as np
 from google.cloud import bigquery
@@ -29,7 +31,6 @@ from scripts.lapse_propensity import (
     create_btyd_features,
     log_dataframe_stats,
     log_config_constants,
-    DiagnosticsTracker,
     PROJECT_ID,
     DATABASE_NAME,
 )
@@ -42,6 +43,29 @@ CALIBRATION_END_DATE = "2024-01-01"  # End of training period
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
+
+
+class DiagnosticsTracker:
+    def __init__(self):
+        self.start_time = time.time()
+        self.process = psutil.Process(os.getpid())
+        self.checkpoints = []
+
+    def checkpoint(self, name: str):
+        current_time = time.time()
+        memory_mb = self.process.memory_info().rss / 1024 / 1024
+        elapsed = current_time - self.start_time
+
+        self.checkpoints.append(
+            {"name": name, "elapsed_s": elapsed, "memory_mb": memory_mb}
+        )
+
+        log.info(f"[{name}] Runtime: {elapsed:.1f}s, Memory: {memory_mb:.1f}MB")
+
+    def summary(self):
+        total_time = time.time() - self.start_time
+        peak_memory = max(c["memory_mb"] for c in self.checkpoints)
+        log.info(f"Total runtime: {total_time:.1f}s, Peak memory: {peak_memory:.1f}MB")
 
 
 def fetch_sample_transactions(bq: BQ, sample_size: int, observation_end_date: str):
@@ -363,10 +387,10 @@ def test_production_model():
     # Evaluate model
     log.info("Evaluating model performance")
     metrics = evaluate_model_predictions(test_features)
-    
+
     # Save metrics to txt file
     metrics_path = Path(__file__).parent / "test_metrics.txt"
-    with open(metrics_path, 'w') as f:
+    with open(metrics_path, "w") as f:
         f.write("LAPSE PROPENSITY MODEL TEST METRICS\n")
         f.write("=" * 40 + "\n\n")
         f.write(f"Dataset size: {metrics['n_customers']} customers\n")
@@ -379,7 +403,7 @@ def test_production_model():
         f.write(f"  Precision: {metrics['precision']:.4f}\n")
         f.write(f"  Recall: {metrics['recall']:.4f}\n")
     log.info(f"Saved metrics to {metrics_path}")
-    
+
     diagnostics.checkpoint("Model evaluation")
 
     # Log feature statistics
