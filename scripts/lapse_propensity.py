@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 class CustomerStatus:
     """Customer status labels. Change as desired"""
 
-    ACTIVE = "active"
+    ACTIVE = "alive"
     LAPSING = "lapsing"
     LOST = "lost"
 
