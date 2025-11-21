@@ -37,9 +37,10 @@ from scripts.lapse_propensity import (
 
 # Test configuration
 TEST_SAMPLE_SIZE = 1000000  # Sample size for testing
-TEST_HORIZON_DAYS = 365  # Test period for evaluation
+TEST_HORIZON_DAYS = 540  # Test period for evaluation
 TEST_TABLE_NAME = "customer_ltv_analysis_test"
 CALIBRATION_END_DATE = "2024-01-01"  # End of training period
+MIN_TRANSACTION_COUNT = None  # Minimum transactions per customer (None = no filter)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -70,18 +71,23 @@ class DiagnosticsTracker:
 
 def fetch_sample_transactions(bq: BQ, sample_size: int, observation_end_date: str):
     """Fetch sample transactions for testing with date limit and sampling"""
+    # Build HAVING clause if MIN_TRANSACTION_COUNT is set
+    having_clause = f"HAVING COUNT(*) > {MIN_TRANSACTION_COUNT}" if MIN_TRANSACTION_COUNT is not None else ""
+
     sample_query = f"""
     WITH sampled_customers AS (
-        SELECT DISTINCT customer_id 
-        FROM `mpb-data-science-dev-ab-602d.dsci_daw.STV` 
+        SELECT customer_id
+        FROM `mpb-data-science-dev-ab-602d.dsci_daw.STV`
         WHERE DATE(transaction_completed_datetime) <= @observation_end_date
         AND transaction_completed_datetime is not null
+        GROUP BY customer_id
+        {having_clause}
         ORDER BY RAND()
         LIMIT {sample_size}
     )
-    SELECT customer_id, 
+    SELECT customer_id,
     DATETIME(transaction_completed_datetime) as txn_date
-    FROM `mpb-data-science-dev-ab-602d.dsci_daw.STV` 
+    FROM `mpb-data-science-dev-ab-602d.dsci_daw.STV`
     WHERE DATE(transaction_completed_datetime) <= @observation_end_date
     AND transaction_completed_datetime is not null
     AND customer_id IN (SELECT customer_id FROM sampled_customers)
