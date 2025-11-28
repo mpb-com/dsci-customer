@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 from lifetimes.utils import summary_data_from_transaction_data
-from src.utils.bq import BQ
 from google.cloud import bigquery
 from .config import (
     CUTOFF_DAYS,
@@ -23,9 +22,8 @@ def label_predictions(probs, alive_min=0.6, lapsed_max=0.3):
     return labels
 
 
-def save_transactions():
+def save_transactions(bq):
     """Fetch transaction data from BigQuery and save to parquet"""
-    bq = BQ()
 
     job_config = bigquery.QueryJobConfig()
     dtypes = {"id": "int32", "txn_date": "datetime64[ns]", "value": "int32"}
@@ -39,9 +37,7 @@ def save_transactions():
     transactions.to_parquet(TRANSACTIONS_DATASET, index=False)
 
 
-def save_customer_data():
-    bq = BQ()
-
+def save_customer_data(bq):
     customer_data = bq.to_dataframe(CUSTOMER_DATA_QUERY)
 
     customer_data.to_parquet(CUSTOMER_DATA_DATASET, index=False)

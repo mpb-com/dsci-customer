@@ -1,39 +1,133 @@
 [project]
-name = "ltv"
+name = "dsci-customer"
 version = "0.1.0"
-description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "db-dtypes>=1.4.3",
-    "dotenv>=0.9.9",
-    "google-adk>=1.9.0",
-    "google-cloud-bigquery-storage>=2.32.0",
-    "google-cloud-bigquery>=3.35.1",
-    "ipykernel>=6.30.0",
-    "matplotlib>=3.10.5",
-    "pandas>=2.3.1",
-    "tabulate>=0.9.0",
-    "tqdm>=4.67.1",
-    "lifetimes>=0.11.3",
-    "lifelines>=0.30.0",
-    "scikit-survival>=0.25.0",
-    "seaborn>=0.13.2",
+    "db-dtypes",
+    "dotenv",
+    "google-adk",
+    "google-cloud-bigquery-storage",
+    "google-cloud-bigquery",
+    "matplotlib",
+    "pandas",
+    "tabulate",
+    "tqdm",
+    "lifetimes",
+    "lifelines",
+    "scikit-survival",
+    "seaborn",
+    "loguru",
+    "dsci-utilities @ git+https://github.com/mpb-com/dsci-utilities.git@main#egg=dsci-utilities",
+]
+
+[dependency-groups]
+dev = [
+    "jupyterlab",
+    "ipywidgets",
+    "ipykernel",
+]
+lint = [
+    "ruff",
+    "mypy",
+    "pandas-stubs",
+    "types-seaborn",
+    "types-PyYAML",
+]
+test = [
+    "pytest",
+    "pytest-cov",
+    "pytest-mock",
 ]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
 
-[dependency-groups]
-dev = [
-    "ruff>=0.12.10",
-]
 
 [tool.ruff]
-lint.ignore = [
-    "E"
-    ]
+line-length = 120
+exclude = [
+    "notebooks/",
+    "dev/",
+    "**/_legacy/"
+]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "C",     # flake8-comprehensions
+    "E",     # pycodestyle errors
+    "F",     # pyflakes - logical errors and undefined names
+    "W",     # pycodestyle warnings
+    "B",     # flake8-bugbear - common bugs
+    "I",     # isort - import sorting
+    "COM",   # flake8-commas - trailing comma checks
+    "Q",     # flake8-quotes - quote style consistency
+    "TID",   # flake8-tidy-imports - import organization
+]
+
+ignore = [
+    "E701",  # multiple statements on one line (colon)
+    "COM812", # trailing comma conflicts with formatter
+    "C408",  # unnecessary dict() call (keep existing patterns)
+    "B904",  # raise exceptions with `raise ... from err`
+    "C419",  # unnecessary list comprehension
+    "C416",  # unnecessary list comprehension (rewrite using list())
+    "B028",  # no explicit stacklevel keyword argument found
+    "B017",  # pytest.raises without match parameter
+    "B011",  # do not call assert False since python -O removes these calls
+    "B007",  # loop control variable not used within loop body
+    "C401",  # unnecessary generator (rewrite as a set comprehension)
+    "C403",  # unnecessary list comprehension (rewrite as a set comprehension)
+    "B006",  # do not use mutable data structures for argument defaults
+    "I001",  # import block is un-sorted or un-formatted
+    "B018",  # found useless expression
+    "C417",  # unnecessary map usage (rewrite using a comprehension)
+    "B023",  # function definition does not bind loop variable
+    "C409",  # unnecessary literal inside list()
+    "C405",  # unnecessary literal inside tuple()
+    "C404",  # unnecessary list comprehension (rewrite as a dict comprehension)
+    "C400",  # unnecessary generator (rewrite as a list comprehension)
+    "B027",  # empty method in an abstract base class, but has no abstract decorator
+    "B024",  # abstract base class, but it has no abstract methods or properties
+    "B012",  # return inside finally blocks cause exceptions to be silenced
+    "B019",  # use of functools.lru_cache on methods can lead to memory leaks
+    "B020",  # loop control variable overrides iterable it iterates
+    "B905",  # zip() without an explicit strict= parameter
+    "B009",  # do not call getattr with a constant attribute value
+    "B013",  # a length-one tuple literal is redundant in exception handlers
+    "C420",  # unnecessary dict comprehension for iterable; use dict.fromkeys instead
+]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+split-on-trailing-comma = true
+
+[tool.ruff.lint.mccabe]
+max-complexity = 12
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "parents"
+
+[tool.mypy]
+exclude = [
+    ".venv/",
+    "notebooks/",
+    "dev/",
+    ".*/\\_legacy/"
+]
+
+python_version = "3.12"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+addopts = "--cov=src"
+testpaths = ["test"]
+norecursedirs = ["_legacy"]
