@@ -136,8 +136,8 @@ def backtest_pipeline(bq):
     test_features["customer_status"] = model.customer_status(test_features)
     test_features.to_parquet(Path(DATA_DIR) / "test_results.parquet")
 
-    # Evaluate predictions
-    metrics = evaluate_model_predictions(test_features)
+    # Evaluate predictions (pass transactions for purchase timing analysis)
+    metrics = evaluate_model_predictions(test_features, transactions=transactions)
     _save_metrics_to_file(metrics, Path(DATA_DIR) / "test_metrics.txt")
     log.info("Metrics computed and saved to file")
     return {
