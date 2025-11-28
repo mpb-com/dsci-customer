@@ -1,3 +1,6 @@
+from pathlib import Path
+
+
 ACTIVE_PROBABILITY_CUTOFF = 0.6
 LAPSING_PROBABILITY_CUTOFF = 0.3
 ALIVE_CUTOFF_DAYS = 270
@@ -14,7 +17,7 @@ TEST_SAMPLE_SIZE = 1000000  # Sample size for testing
 TEST_HORIZON_DAYS = 540  # Test period for evaluation
 MIN_TRANSACTION_COUNT = None
 CALIBRATION_END_DATE = "2024-01-01"  # End of training period
-DATA_DIR = "data"
+DATA_DIR = Path(__file__).parent.parent.parent / "data"
 
 # Don't touch!
 PARETO_PENALIZER = 0.001

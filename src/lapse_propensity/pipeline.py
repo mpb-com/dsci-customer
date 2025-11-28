@@ -31,5 +31,5 @@ def pipe(bq):
     log_config_constants()
 
     # Save results
-    bq.write_to(final_features, f"{PROJECT_ID}.{DATABASE_NAME}.{TABLE_NAME}")
+    bq.write_to(final_features, TABLE_NAME)
     log.info("Lapse propensity model completed and data saved to BigQuery")

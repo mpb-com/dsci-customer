@@ -17,3 +17,6 @@ data/
 .server_pid
 logs/
 data/
+.mypy_cache/
+.pytest_cache/
+.coverage

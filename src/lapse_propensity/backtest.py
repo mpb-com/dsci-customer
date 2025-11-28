@@ -24,7 +24,7 @@ def fetch_sample_transactions(bq, sample_size: int, observation_end_date: str):
     WITH sampled_customers AS (
         SELECT customer_id
         FROM `mpb-data-science-dev-ab-602d.dsci_daw.STV`
-        WHERE DATE(transaction_completed_datetime) <= @observation_end_date
+        WHERE DATE(transaction_completed_datetime) <= '{observation_end_date}'
         AND transaction_completed_datetime is not null
         GROUP BY customer_id
         {having_clause}

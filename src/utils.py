@@ -8,6 +8,7 @@ from src.definitions import (
 )
 from dsci_utilities import BQHelper
 from loguru import logger
+from loguru._logger import Logger
 import sys
 import os
 from datetime import datetime
@@ -28,7 +29,7 @@ def get_bq_helper(validate=False) -> BQHelper:
     )
 
 
-def setup_logging(script_name: str):
+def setup_logging(script_name: str) -> Logger:
     """
     Configure Loguru for a script with stdout and dated file output.
 
@@ -52,3 +53,4 @@ def setup_logging(script_name: str):
     today = datetime.now().strftime("%Y%m%d")
     log_file = os.path.join(LOGGING_FOLDER, f"{script_name}_{today}.log")
     logger.add(log_file, level="DEBUG", rotation="1 day", retention="30 days")
+    return logger
