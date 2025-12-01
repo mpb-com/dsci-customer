@@ -43,7 +43,7 @@ def fetch_sample_transactions(bq, sample_size: int, observation_end_date: str):
     """
 
     transactions = bq.get_string(sample_query)
-    n_customers = transactions['customer_id'].nunique()
+    n_customers = transactions["customer_id"].nunique()
     n_transactions = len(transactions)
     log.info(f"Sample size requested: {sample_size:,} customers")
     log.info(f"Sample size fetched:   {n_customers:,} customers ({n_transactions:,} transactions)")
@@ -156,7 +156,7 @@ def _save_metrics_to_file(metrics: dict, filepath: str, horizon_days: int = 570)
         f.write("=" * 80 + "\n")
         f.write("LAPSE PROPENSITY MODEL TEST METRICS\n")
         f.write("=" * 80 + "\n\n")
-        f.write(f"OBSERVATION WINDOW: {horizon_days} days ({horizon_days/30:.0f} months)\n")
+        f.write(f"OBSERVATION WINDOW: {horizon_days} days ({horizon_days / 30:.0f} months)\n")
         f.write(f"DEFINITION OF 'ALIVE': Customer made ≥1 transaction within {horizon_days}-day window\n\n")
         f.write(f"Dataset size: {metrics['n_customers']} customers\n")
         f.write(f"Baseline (% active): {metrics['baseline_active_rate']:.1%}\n\n")
@@ -167,22 +167,22 @@ def _save_metrics_to_file(metrics: dict, filepath: str, horizon_days: int = 570)
         f.write("=" * 80 + "\n")
         f.write(f"  AUC (Ranking Power): {metrics['auc']:.4f}\n\n")
 
-        alive_thresh = metrics.get('alive_threshold', 'N/A')
-        dead_thresh = metrics.get('dead_threshold', 'N/A')
-        baseline = metrics['baseline_active_rate']
+        alive_thresh = metrics.get("alive_threshold", "N/A")
+        dead_thresh = metrics.get("dead_threshold", "N/A")
+        baseline = metrics["baseline_active_rate"]
 
         # Get bucket stats if available
-        bucket_df = metrics.get('bucket_performance')
+        bucket_df = metrics.get("bucket_performance")
         lost_pct = alive_pct = lost_lift = alive_lift = None
         if bucket_df is not None:
-            lost_row = bucket_df[bucket_df['bucket'] == 'LOST']
-            alive_row = bucket_df[bucket_df['bucket'] == 'ALIVE']
+            lost_row = bucket_df[bucket_df["bucket"] == "LOST"]
+            alive_row = bucket_df[bucket_df["bucket"] == "ALIVE"]
             if len(lost_row) > 0:
-                lost_pct = lost_row['pct_of_total'].values[0]
-                lost_lift = lost_row['lift'].values[0]
+                lost_pct = lost_row["pct_of_total"].values[0]
+                lost_lift = lost_row["lift"].values[0]
             if len(alive_row) > 0:
-                alive_pct = alive_row['pct_of_total'].values[0]
-                alive_lift = alive_row['lift'].values[0]
+                alive_pct = alive_row["pct_of_total"].values[0]
+                alive_lift = alive_row["lift"].values[0]
 
         f.write("-" * 80 + "\n")
         f.write("OPERATION 1: COST CUTTING (LOST Customers)\n")
@@ -198,19 +198,19 @@ def _save_metrics_to_file(metrics: dict, filepath: str, horizon_days: int = 570)
             f.write(f"    → Excludes {lost_pct:.1%} of total database from marketing.\n\n")
         else:
             f.write("\n")
-        f.write(f"  FINANCE SIGN-OFF:\n")
-        f.write(f"    \"Stop marketing to the LOST bucket. {metrics['lost_precision']:.0%} of them\n")
-        f.write(f"     are never coming back. This is safe cost-cutting.\"\n\n")
+        f.write("  FINANCE SIGN-OFF:\n")
+        f.write(f'    "Stop marketing to the LOST bucket. {metrics["lost_precision"]:.0%} of them\n')
+        f.write('     are never coming back. This is safe cost-cutting."\n\n')
 
         f.write("-" * 80 + "\n")
         f.write("OPERATION 2: REVENUE PROTECTION (ALIVE Customers)\n")
         f.write("-" * 80 + "\n")
         f.write(f"Goal: Identify customers highly likely to transact in next {horizon_days} days.\n\n")
         # Handle NaN precision when there are no customers in ALIVE bucket
-        alive_precision = metrics['alive_precision']
+        alive_precision = metrics["alive_precision"]
         if pd.isna(alive_precision):
             f.write(f"  ALIVE Precision (p > {alive_thresh:.3f}): N/A (no customers in bucket)\n")
-            f.write(f"    → No customers met the ALIVE threshold criteria.\n\n")
+            f.write("    → No customers met the ALIVE threshold criteria.\n\n")
         else:
             f.write(f"  ALIVE Precision (p > {alive_thresh:.3f}): {alive_precision:.1%}\n")
             f.write(f"    → When we mark someone as VIP, {alive_precision:.1%} transacted\n")
@@ -225,13 +225,13 @@ def _save_metrics_to_file(metrics: dict, filepath: str, horizon_days: int = 570)
             f.write(f"    → This is {alive_pct:.1%} of the total database.\n\n")
         else:
             f.write("\n")
-        f.write(f"  CRM SIGN-OFF:\n")
+        f.write("  CRM SIGN-OFF:\n")
         if alive_lift is not None and not pd.isna(alive_lift):
             f.write(f"    \"Treat the ALIVE bucket like royalty. They're {alive_lift:.1f}× more valuable\n")
-            f.write(f"     than average. Don't annoy them with spam or deep discounts.\"\n\n")
+            f.write("     than average. Don't annoy them with spam or deep discounts.\"\n\n")
         else:
-            f.write(f"    \"Treat the ALIVE bucket with care. Don't annoy them with spam or\n")
-            f.write(f"     deep discounts.\"\n\n")
+            f.write("    \"Treat the ALIVE bucket with care. Don't annoy them with spam or\n")
+            f.write('     deep discounts."\n\n')
 
         f.write("-" * 80 + "\n")
         f.write("WHY SEPARATE METRICS MATTER\n")
@@ -247,8 +247,8 @@ def _save_metrics_to_file(metrics: dict, filepath: str, horizon_days: int = 570)
         f.write(f"  Brier Score: {metrics['brier_score']:.4f}\n\n")
 
         # Safety Net threshold comparison
-        if metrics.get('safety_net_threshold'):
-            sn = metrics['safety_net_threshold']
+        if metrics.get("safety_net_threshold"):
+            sn = metrics["safety_net_threshold"]
             f.write("=" * 80 + "\n")
             f.write("THRESHOLD COMPARISON\n")
             f.write("=" * 80 + "\n")
@@ -259,8 +259,8 @@ def _save_metrics_to_file(metrics: dict, filepath: str, horizon_days: int = 570)
             f.write(f"Safety Net risk:     {1 - sn['actual_recall']:.1%} of missing sales\n\n")
 
         # Purchase timing analysis
-        if metrics.get('purchase_timing'):
-            pt = metrics['purchase_timing']
+        if metrics.get("purchase_timing"):
+            pt = metrics["purchase_timing"]
             f.write("=" * 80 + "\n")
             f.write("PURCHASE TIMING ANALYSIS\n")
             f.write("=" * 80 + "\n")
@@ -273,7 +273,7 @@ def _save_metrics_to_file(metrics: dict, filepath: str, horizon_days: int = 570)
             f.write("One-and-Done:\n")
             f.write(f"  Rate: {pt['one_and_done_rate']:.1%}\n")
             f.write(f"  Count: {pt['one_time_buyers']:,} / {pt['total_customers']:,}\n\n")
-            if pt['n_whales'] > 0:
+            if pt["n_whales"] > 0:
                 f.write("Whale IPT (5+ purchases):\n")
                 f.write(f"  Mean IPT:   {pt['whale_ipt_mean']:.1f} days\n")
                 f.write(f"  Median IPT: {pt['whale_ipt_median']:.1f} days\n")
@@ -283,7 +283,7 @@ def _save_metrics_to_file(metrics: dict, filepath: str, horizon_days: int = 570)
         f.write("=" * 80 + "\n")
         f.write("BUCKET PERFORMANCE\n")
         f.write("=" * 80 + "\n")
-        bucket_df = metrics.get('bucket_performance')
+        bucket_df = metrics.get("bucket_performance")
         if bucket_df is not None:
             f.write(bucket_df.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
             f.write("\n\n")
@@ -292,7 +292,7 @@ def _save_metrics_to_file(metrics: dict, filepath: str, horizon_days: int = 570)
         f.write("=" * 80 + "\n")
         f.write("DECILE ANALYSIS\n")
         f.write("=" * 80 + "\n")
-        decile_df = metrics.get('decile_analysis')
+        decile_df = metrics.get("decile_analysis")
         if decile_df is not None:
             f.write(decile_df.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
             f.write("\n\n")
@@ -301,7 +301,7 @@ def _save_metrics_to_file(metrics: dict, filepath: str, horizon_days: int = 570)
         f.write("=" * 80 + "\n")
         f.write("THRESHOLD ANALYSIS\n")
         f.write("=" * 80 + "\n")
-        threshold_df = metrics.get('threshold_analysis')
+        threshold_df = metrics.get("threshold_analysis")
         if threshold_df is not None:
             f.write(threshold_df.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
             f.write("\n\n")
@@ -310,14 +310,14 @@ def _save_metrics_to_file(metrics: dict, filepath: str, horizon_days: int = 570)
         f.write("=" * 80 + "\n")
         f.write("SEGMENT ANALYSIS\n")
         f.write("=" * 80 + "\n")
-        segment_df = metrics.get('segment_analysis')
+        segment_df = metrics.get("segment_analysis")
         if segment_df is not None:
             f.write(segment_df.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
             f.write("\n\n")
 
         # Generate and write model card
-        dead_thresh = metrics.get('dead_threshold', 'N/A')
-        alive_thresh = metrics.get('alive_threshold', 'N/A')
+        dead_thresh = metrics.get("dead_threshold", "N/A")
+        alive_thresh = metrics.get("alive_threshold", "N/A")
         if isinstance(dead_thresh, (int, float)) and isinstance(alive_thresh, (int, float)):
             model_card = generate_model_summary(metrics, dead_thresh, alive_thresh, horizon_days)
             f.write("\n" + model_card + "\n")
@@ -388,6 +388,7 @@ def backtest_pipeline(bq):
 
     # Calculate Safety Net threshold (cumulative recall approach)
     from .eval import find_dead_threshold
+
     safety_net_result = find_dead_threshold(test_features, target_recall=DEAD_RECALL_TARGET)
     dead_threshold = safety_net_result["threshold"]  # Use Safety Net for DEAD
 
@@ -395,7 +396,9 @@ def backtest_pipeline(bq):
     log.info("DYNAMIC THRESHOLDS (Hybrid: Safety Net DEAD + Lift-Based ALIVE)")
     log.info("=" * 80)
     log.info(f"Baseline active rate: {baseline_rate:.1%}")
-    log.info(f"DEAD threshold (Safety Net {DEAD_RECALL_TARGET:.0%} recall): {dead_threshold:.3f} ({dead_threshold:.1%})")
+    log.info(
+        f"DEAD threshold (Safety Net {DEAD_RECALL_TARGET:.0%} recall): {dead_threshold:.3f} ({dead_threshold:.1%})"
+    )
     log.info(f"  (Lift-Based would be: {lift_based_dead:.3f})")
     log.info(f"ALIVE threshold ({ALIVE_LIFT_MULTIPLIER}x baseline): {alive_threshold:.3f} ({alive_threshold:.1%})")
     log.info("")
@@ -411,7 +414,9 @@ def backtest_pipeline(bq):
     log.info("STEP 5: Evaluating predictions on test window")
     log.info("=" * 80)
     # Pass calibrator_model for scenario plots (has calibrators attached)
-    metrics = evaluate_model_predictions(test_features, transactions=transactions, trained_model=calibrator_model, horizon_days=TEST_HORIZON_DAYS)
+    metrics = evaluate_model_predictions(
+        test_features, transactions=transactions, trained_model=calibrator_model, horizon_days=TEST_HORIZON_DAYS
+    )
     _save_metrics_to_file(metrics, Path(DATA_DIR) / "test_metrics.txt", horizon_days=TEST_HORIZON_DAYS)
     log.info("Metrics computed and saved to file")
 

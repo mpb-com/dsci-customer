@@ -7,7 +7,7 @@ import pandas as pd
 def fetch_transactions(bq, query=TRANSACTION_QUERY):
     """Fetch transaction data from BigQuery"""
     transactions = bq.get_string(query)
-    n_customers = transactions['customer_id'].nunique()
+    n_customers = transactions["customer_id"].nunique()
     n_transactions = len(transactions)
     log.info(f"Fetched {n_transactions:,} transactions for {n_customers:,} customers")
 

@@ -124,9 +124,7 @@ def pipe(bq, calibration_window_days=None):
         calibrated_probs[pareto_mask] = calibrator_model.pareto.calibrator.predict(uncalibrated_probs[pareto_mask])
 
     if calibrator_model.empirical.calibrator is not None:
-        calibrated_probs[~pareto_mask] = calibrator_model.empirical.calibrator.predict(
-            uncalibrated_probs[~pareto_mask]
-        )
+        calibrated_probs[~pareto_mask] = calibrator_model.empirical.calibrator.predict(uncalibrated_probs[~pareto_mask])
 
     all_features["p_alive"] = calibrated_probs.round(4)
 

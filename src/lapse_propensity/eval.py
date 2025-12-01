@@ -331,7 +331,9 @@ def calculate_business_thresholds(
     }
 
 
-def generate_model_summary(metrics: dict, dead_threshold: float, alive_threshold: float, horizon_days: int = 570) -> str:
+def generate_model_summary(
+    metrics: dict, dead_threshold: float, alive_threshold: float, horizon_days: int = 570
+) -> str:
     """
     Generates a production-grade Model Card explaining logic, risk, and performance.
 
@@ -348,25 +350,26 @@ def generate_model_summary(metrics: dict, dead_threshold: float, alive_threshold
         Formatted string suitable for reports or Slack updates
     """
     # Calculate implied Lift for the summary text
-    baseline = metrics.get('baseline_active_rate', 0.168)
-    alive_lift = (metrics['alive_precision'] / baseline) if baseline > 0 else 0.0
+    baseline = metrics.get("baseline_active_rate", 0.168)
+    alive_lift = (metrics["alive_precision"] / baseline) if baseline > 0 else 0.0
 
     # Calculate what percentage of active customers fall into LAPSING
-    alive_recall = metrics.get('alive_recall', 0)
-    lost_false_negative_rate = 1 - metrics.get('lost_precision', 0.95)  # FNR = customers wrongly marked LOST
+    alive_recall = metrics.get("alive_recall", 0)
+    lost_false_negative_rate = 1 - metrics.get("lost_precision", 0.95)  # FNR = customers wrongly marked LOST
     lapsing_active_pct = 100 - (alive_recall * 100) - (lost_false_negative_rate * 100)
 
     # Calculate prior (baseline) performance
     import numpy as np
+
     p = baseline
     prior_brier = p * (1 - p)  # Var(Y) = p(1-p) - irreducible uncertainty
     prior_logloss = -(p * np.log(p) + (1 - p) * np.log(1 - p))  # Entropy of the prior
     prior_auc = 0.5  # No ranking ability without features
 
     # Calculate skill improvement over prior
-    brier_skill = ((prior_brier - metrics['brier_score']) / prior_brier * 100) if prior_brier > 0 else 0
-    logloss_skill = ((prior_logloss - metrics['log_loss']) / prior_logloss * 100) if prior_logloss > 0 else 0
-    auc_skill = ((metrics['auc'] - prior_auc) / (1 - prior_auc) * 100) if prior_auc < 1 else 0
+    brier_skill = ((prior_brier - metrics["brier_score"]) / prior_brier * 100) if prior_brier > 0 else 0
+    logloss_skill = ((prior_logloss - metrics["log_loss"]) / prior_logloss * 100) if prior_logloss > 0 else 0
+    auc_skill = ((metrics["auc"] - prior_auc) / (1 - prior_auc) * 100) if prior_auc < 1 else 0
 
     summary = f"""
 ================================================================================
@@ -374,7 +377,7 @@ FINAL MODEL CARD: LAPSE PROPENSITY (Hybrid Pareto/NBD + Empirical)
 ================================================================================
 
 DEFINITION OF "ALIVE":
-Customer makes at least ONE transaction within the next {horizon_days} days ({horizon_days/30:.0f} months).
+Customer makes at least ONE transaction within the next {horizon_days} days ({horizon_days / 30:.0f} months).
 
 This is not "alive forever" - it's "alive within the observation window."
 Ground truth: y_true_alive = 1 if customer transacted in {horizon_days}-day holdout period.
@@ -384,21 +387,21 @@ Ground truth: y_true_alive = 1 if customer transacted in {horizon_days}-day hold
 1. CALIBRATION & RELIABILITY (Why you can trust the score)
 
    A. BRIER SCORE (Probability Accuracy)
-      - Model:       {metrics['brier_score']:.4f}
-      - Prior:       {prior_brier:.4f}  [Formula: p(1-p) = {baseline:.3f} × {1-baseline:.3f}]
+      - Model:       {metrics["brier_score"]:.4f}
+      - Prior:       {prior_brier:.4f}  [Formula: p(1-p) = {baseline:.3f} × {1 - baseline:.3f}]
       - Skill:       {brier_skill:.1f}% reduction in error vs prior
       → Measures mean squared error of predicted probabilities.
         Lower is better. 0 = perfect, prior = {prior_brier:.4f}.
 
    B. LOG LOSS (Penalizes Confident Mistakes)
-      - Model:       {metrics['log_loss']:.4f}
+      - Model:       {metrics["log_loss"]:.4f}
       - Prior:       {prior_logloss:.4f}  [Formula: -[p×log(p) + (1-p)×log(1-p)]]
       - Skill:       {logloss_skill:.1f}% reduction in entropy vs prior
       → Cross-entropy loss. Heavily penalizes confident wrong predictions.
         Lower is better. 0 = perfect calibration.
 
    C. AUC (Ranking Power)
-      - Model:       {metrics['auc']:.4f}
+      - Model:       {metrics["auc"]:.4f}
       - Prior:       {prior_auc:.4f}  [No features = no ranking ability]
       - Skill:       {auc_skill:.1f}% of maximum achievable gain
       → Probability that a random active customer ranks higher than a random
@@ -406,50 +409,50 @@ Ground truth: y_true_alive = 1 if customer transacted in {horizon_days}-day hold
 
    VERDICT: The model is CALIBRATED. If it predicts a 20% chance of activity,
             historically exactly 20% of such customers transacted within the next
-            {horizon_days} days ({horizon_days/30:.0f} months).
+            {horizon_days} days ({horizon_days / 30:.0f} months).
 
 2. BUSINESS THRESHOLDS (Dynamic Constraints)
    The model segments customers based on Risk Tolerance and Value Lift.
-   Time Horizon: {horizon_days} days ({horizon_days/30:.0f} months)
+   Time Horizon: {horizon_days} days ({horizon_days / 30:.0f} months)
 
    A. THE "LOST" BUCKET (< {dead_threshold:.4f}) → COST SAVINGS
       - Definition: Customers unlikely to transact in next {horizon_days} days.
       - Safety Constraint: Max 5% Revenue Risk.
       - Reality Check: We have successfully identified a group where
-        {metrics['lost_precision']:.1%} did NOT transact in the {horizon_days}-day window.
+        {metrics["lost_precision"]:.1%} did NOT transact in the {horizon_days}-day window.
         We accept that ~{lost_false_negative_rate:.1%} of ACTUALLY ACTIVE customers
         will incorrectly fall into this bucket (False Negatives), but the cost
-        savings on the other {metrics['lost_precision']:.1%} outweigh this loss.
-      - Performance: LOST Precision = {metrics['lost_precision']:.1%}.
+        savings on the other {metrics["lost_precision"]:.1%} outweigh this loss.
+      - Performance: LOST Precision = {metrics["lost_precision"]:.1%}.
 
    B. THE "ALIVE" BUCKET (> {alive_threshold:.4f}) → VIP TREATMENT
       - Definition: Customers highly likely to transact in next {horizon_days} days.
       - Value Constraint: Minimum {alive_lift:.1f}× Lift vs Average.
       - Reality Check: These customers are {alive_lift:.1f}× more likely to buy
         within {horizon_days} days than the average customer in our database.
-      - Performance: ALIVE Precision = {metrics['alive_precision']:.1%}
+      - Performance: ALIVE Precision = {metrics["alive_precision"]:.1%}
         (vs Baseline {baseline:.1%}).
 
 3. OPERATIONAL IMPACT
-   - Total Active Customers Captured as VIPs: {metrics['alive_recall']:.1%}
-   - Total Dead Customers Removed from Cost:  {metrics['lost_recall']:.1%}
+   - Total Active Customers Captured as VIPs: {metrics["alive_recall"]:.1%}
+   - Total Dead Customers Removed from Cost:  {metrics["lost_recall"]:.1%}
    - The Remaining Active Customers ({lapsing_active_pct:.1f}%) are in the
      LAPSING bucket and should be targeted with retention campaigns.
 
 4. MODEL PERFORMANCE SUMMARY
-   - AUC (Ranking Power): {metrics['auc']:.4f}
+   - AUC (Ranking Power): {metrics["auc"]:.4f}
      → The model can distinguish active from inactive customers
-   - Dataset Size: {metrics['n_customers']:,} customers
+   - Dataset Size: {metrics["n_customers"]:,} customers
    - Baseline Active Rate: {baseline:.1%}
 
 5. RECOMMENDATIONS BY STAKEHOLDER
-   - CFO: "Stop marketing to {metrics.get('business_thresholds', {}).get('lost_pct', 0.33):.0%} of database
-     (LOST bucket). {metrics['lost_precision']:.0%} of them are never coming back."
+   - CFO: "Stop marketing to {metrics.get("business_thresholds", {}).get("lost_pct", 0.33):.0%} of database
+     (LOST bucket). {metrics["lost_precision"]:.0%} of them are never coming back."
    - CMO: "Focus retention budget on LAPSING bucket
-     ({metrics.get('business_thresholds', {}).get('lapsing_pct', 0.55):.0%} of customers).
+     ({metrics.get("business_thresholds", {}).get("lapsing_pct", 0.55):.0%} of customers).
      This is where spend generates ROI."
    - CRM: "Protect ALIVE bucket
-     ({metrics.get('business_thresholds', {}).get('alive_pct', 0.16):.0%} of customers).
+     ({metrics.get("business_thresholds", {}).get("alive_pct", 0.16):.0%} of customers).
      They're {alive_lift:.1f}× more valuable. Don't spam them."
 
 ================================================================================
@@ -493,8 +496,7 @@ def log_business_threshold_report(thresholds: dict):
     log.info(f"Definition:     Customers with score > {thresholds['alive_threshold']:.3f}")
     log.info(f"Size:           {thresholds['alive_size']:,} customers ({thresholds['alive_pct']:.1%} of database)")
     log.info(
-        f"Quality:        These customers are {thresholds['actual_alive_lift']:.1f}× "
-        f"more likely to buy than average"
+        f"Quality:        These customers are {thresholds['actual_alive_lift']:.1f}× more likely to buy than average"
     )
     log.info(
         f"Capture:        Contains {thresholds['alive_active_pct']:.1%} of all active buyers "
@@ -510,8 +512,7 @@ def log_business_threshold_report(thresholds: dict):
     log.info('THE "LAPSING" BUCKET (The Battleground)')
     log.info("-" * 80)
     log.info(
-        f"Definition:     Score between {thresholds['dead_threshold']:.3f} "
-        f"and {thresholds['alive_threshold']:.3f}"
+        f"Definition:     Score between {thresholds['dead_threshold']:.3f} and {thresholds['alive_threshold']:.3f}"
     )
     log.info(f"Size:           {thresholds['lapsing_size']:,} customers ({thresholds['lapsing_pct']:.1%} of database)")
     log.info(
@@ -786,8 +787,12 @@ def create_evaluation_plots(
     axes[1, 0].hist(active_probs, bins=50, alpha=0.7, label=f"Active (n={len(active_probs):,})", color="blue")
 
     # Add threshold lines
-    axes[1, 0].axvline(dead_threshold, color="darkred", linestyle="--", linewidth=2, label=f"LOST < {dead_threshold:.3f}")
-    axes[1, 0].axvline(alive_threshold, color="darkgreen", linestyle="--", linewidth=2, label=f"ALIVE > {alive_threshold:.3f}")
+    axes[1, 0].axvline(
+        dead_threshold, color="darkred", linestyle="--", linewidth=2, label=f"LOST < {dead_threshold:.3f}"
+    )
+    axes[1, 0].axvline(
+        alive_threshold, color="darkgreen", linestyle="--", linewidth=2, label=f"ALIVE > {alive_threshold:.3f}"
+    )
     axes[1, 0].axvline(baseline, color="gray", linestyle=":", linewidth=2, label=f"Baseline = {baseline:.3f}")
 
     axes[1, 0].set_xlabel("P(alive)")
@@ -818,8 +823,12 @@ def create_evaluation_plots(
     )
 
     # Add threshold lines
-    axes[1, 2].axhline(dead_threshold, color="darkred", linestyle="--", linewidth=2, label=f"LOST < {dead_threshold:.3f}")
-    axes[1, 2].axhline(alive_threshold, color="darkgreen", linestyle="--", linewidth=2, label=f"ALIVE > {alive_threshold:.3f}")
+    axes[1, 2].axhline(
+        dead_threshold, color="darkred", linestyle="--", linewidth=2, label=f"LOST < {dead_threshold:.3f}"
+    )
+    axes[1, 2].axhline(
+        alive_threshold, color="darkgreen", linestyle="--", linewidth=2, label=f"ALIVE > {alive_threshold:.3f}"
+    )
     axes[1, 2].axhline(baseline, color="gray", linestyle=":", linewidth=2, label=f"Baseline = {baseline:.3f}")
 
     axes[1, 2].set_xlabel("Days Since Last Transaction")
@@ -875,9 +884,22 @@ def create_evaluation_plots(
     days, p_alive_loyal = simulate_customer_journey(purchase_days_loyal)
 
     axes[2, 0].plot(days, p_alive_loyal, linewidth=2, color="blue")
-    axes[2, 0].scatter(purchase_days_loyal, [1.0] * len(purchase_days_loyal), marker="^", s=50, color="green", alpha=0.6, label="Purchase", zorder=5)
-    axes[2, 0].axhline(dead_threshold, color="darkred", linestyle="--", linewidth=1.5, label=f"LOST < {dead_threshold:.3f}")
-    axes[2, 0].axhline(alive_threshold, color="darkgreen", linestyle="--", linewidth=1.5, label=f"ALIVE > {alive_threshold:.3f}")
+    axes[2, 0].scatter(
+        purchase_days_loyal,
+        [1.0] * len(purchase_days_loyal),
+        marker="^",
+        s=50,
+        color="green",
+        alpha=0.6,
+        label="Purchase",
+        zorder=5,
+    )
+    axes[2, 0].axhline(
+        dead_threshold, color="darkred", linestyle="--", linewidth=1.5, label=f"LOST < {dead_threshold:.3f}"
+    )
+    axes[2, 0].axhline(
+        alive_threshold, color="darkgreen", linestyle="--", linewidth=1.5, label=f"ALIVE > {alive_threshold:.3f}"
+    )
     axes[2, 0].axhline(baseline, color="gray", linestyle=":", linewidth=1.5, label=f"Baseline = {baseline:.3f}")
     axes[2, 0].set_xlabel("Days Since First Purchase")
     axes[2, 0].set_ylabel("P(alive)")
@@ -891,9 +913,22 @@ def create_evaluation_plots(
     days, p_alive_decline = simulate_customer_journey(purchase_days_decline)
 
     axes[2, 1].plot(days, p_alive_decline, linewidth=2, color="orange")
-    axes[2, 1].scatter(purchase_days_decline, [1.0] * len(purchase_days_decline), marker="^", s=50, color="green", alpha=0.6, label="Purchase", zorder=5)
-    axes[2, 1].axhline(dead_threshold, color="darkred", linestyle="--", linewidth=1.5, label=f"LOST < {dead_threshold:.3f}")
-    axes[2, 1].axhline(alive_threshold, color="darkgreen", linestyle="--", linewidth=1.5, label=f"ALIVE > {alive_threshold:.3f}")
+    axes[2, 1].scatter(
+        purchase_days_decline,
+        [1.0] * len(purchase_days_decline),
+        marker="^",
+        s=50,
+        color="green",
+        alpha=0.6,
+        label="Purchase",
+        zorder=5,
+    )
+    axes[2, 1].axhline(
+        dead_threshold, color="darkred", linestyle="--", linewidth=1.5, label=f"LOST < {dead_threshold:.3f}"
+    )
+    axes[2, 1].axhline(
+        alive_threshold, color="darkgreen", linestyle="--", linewidth=1.5, label=f"ALIVE > {alive_threshold:.3f}"
+    )
     axes[2, 1].axhline(baseline, color="gray", linestyle=":", linewidth=1.5, label=f"Baseline = {baseline:.3f}")
     axes[2, 1].set_xlabel("Days Since First Purchase")
     axes[2, 1].set_ylabel("P(alive)")
@@ -907,9 +942,15 @@ def create_evaluation_plots(
     days, p_alive_once = simulate_customer_journey(purchase_days_once)
 
     axes[2, 2].plot(days, p_alive_once, linewidth=2, color="red")
-    axes[2, 2].scatter(purchase_days_once, [1.0], marker="^", s=50, color="green", alpha=0.6, label="Purchase", zorder=5)
-    axes[2, 2].axhline(dead_threshold, color="darkred", linestyle="--", linewidth=1.5, label=f"LOST < {dead_threshold:.3f}")
-    axes[2, 2].axhline(alive_threshold, color="darkgreen", linestyle="--", linewidth=1.5, label=f"ALIVE > {alive_threshold:.3f}")
+    axes[2, 2].scatter(
+        purchase_days_once, [1.0], marker="^", s=50, color="green", alpha=0.6, label="Purchase", zorder=5
+    )
+    axes[2, 2].axhline(
+        dead_threshold, color="darkred", linestyle="--", linewidth=1.5, label=f"LOST < {dead_threshold:.3f}"
+    )
+    axes[2, 2].axhline(
+        alive_threshold, color="darkgreen", linestyle="--", linewidth=1.5, label=f"ALIVE > {alive_threshold:.3f}"
+    )
     axes[2, 2].axhline(baseline, color="gray", linestyle=":", linewidth=1.5, label=f"Baseline = {baseline:.3f}")
     axes[2, 2].set_xlabel("Days Since First Purchase")
     axes[2, 2].set_ylabel("P(alive)")
@@ -927,7 +968,10 @@ def create_evaluation_plots(
 
 
 def evaluate_model_predictions(
-    test_features: pd.DataFrame, transactions: pd.DataFrame | None = None, trained_model=None, horizon_days: int = TEST_HORIZON_DAYS
+    test_features: pd.DataFrame,
+    transactions: pd.DataFrame | None = None,
+    trained_model=None,
+    horizon_days: int = TEST_HORIZON_DAYS,
 ):
     """Evaluate model predictions using standard classification metrics
 
@@ -1018,7 +1062,7 @@ def evaluate_model_predictions(
     log.info("=" * 80)
     log.info("MODEL EVALUATION RESULTS")
     log.info("=" * 80)
-    log.info(f"Observation Window: {horizon_days} days ({horizon_days/30:.0f} months)")
+    log.info(f"Observation Window: {horizon_days} days ({horizon_days / 30:.0f} months)")
     log.info(f"Definition of 'ALIVE': Customer made ≥1 transaction within {horizon_days}-day window")
     log.info(f"Dataset size: {len(test_features)} customers")
     log.info(f"Baseline (% active in holdout): {y_true.mean():.1%}")
@@ -1077,7 +1121,9 @@ def evaluate_model_predictions(
     alive_val = baseline * ALIVE_LIFT_MULTIPLIER
     log.info(f"Baseline active rate: {baseline:.1%}")
     log.info(f"  LOST cutoff:    < {DEAD_LIFT_MULTIPLIER}x baseline = {dead_val:.3f}")
-    log.info(f"  LAPSING range:  {DEAD_LIFT_MULTIPLIER}x - {ALIVE_LIFT_MULTIPLIER}x baseline = {dead_val:.3f} - {alive_val:.3f}")
+    log.info(
+        f"  LAPSING range:  {DEAD_LIFT_MULTIPLIER}x - {ALIVE_LIFT_MULTIPLIER}x baseline = {dead_val:.3f} - {alive_val:.3f}"
+    )
     log.info(f"  ALIVE cutoff:   > {ALIVE_LIFT_MULTIPLIER}x baseline = {alive_val:.3f}")
     log.info("")
     log.info("=" * 80)
