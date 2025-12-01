@@ -6,7 +6,7 @@ from src.definitions import (
     DAW_BQ_DATASET,
     LOGGING_FOLDER,
 )
-from dsci_utilities import BQHelper
+from dsci_utils import BQHelper
 from loguru import logger
 import sys
 import os

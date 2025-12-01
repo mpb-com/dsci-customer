@@ -1,0 +1,37 @@
+{
+    "recommendations": [
+        // Code readability and commenting tools
+        "aaron-bond.better-comments",
+
+        // Python development extensions
+        "ms-python.python",                   // Python language support
+        "ms-python.debugpy",                  // Debugging for Python
+        "ms-python.vscode-pylance",           // Pylance type checking and IntelliSense
+        "ms-toolsai.jupyter",                 // Jupyter notebook support
+        "ms-toolsai.vscode-jupyter-cell",     // Interactive cell execution
+
+        // Code formatting and linting
+        "charliermarsh.ruff",                 // Python linter (Ruff)
+        "esbenp.prettier-vscode",             // Code formatting for multiple languages
+        "inferrinizzard.prettier-sql-vscode", // SQL formatting
+
+        // Data visualization and handling
+        "mechatroner.rainbow-csv",            // CSV file visualization
+
+        // Remote and containerized development
+        "ms-vscode-remote.remote-ssh",        // Remote development over SSH
+        "ms-vscode.remote-explorer",          // Remote connection explorer
+        "ms-vscode-remote.remote-containers", // Development in Docker containers
+
+        // Git and version control
+        "donjayamanne.githistory",            // View Git commit history
+
+        // File and configuration support
+        "tamasfe.even-better-toml",           // TOML syntax highlighting and editing
+        "redhat.vscode-yaml",                 // YAML file support with schema validation
+        "davidanson.vscode-markdownlint",     // Markdown linting and style checking
+        "ms-azuretools.vscode-docker",        // Docker support for managing containers
+        "ms-vscode.makefile-tools"            // Makefile support for commands
+
+    ]
+}

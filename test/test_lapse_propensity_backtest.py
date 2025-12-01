@@ -1,7 +1,7 @@
 import pytest
 import pandas as pd
 from unittest.mock import patch, MagicMock
-from dsci_utilities import BQHelper
+from dsci_utils import BQHelper
 from src.lapse_propensity.backtest import backtest_pipeline
 from src.utils import get_bq_helper
 

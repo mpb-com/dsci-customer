@@ -18,7 +18,7 @@ dependencies = [
     "scikit-survival",
     "seaborn",
     "loguru",
-    "dsci-utilities @ git+https://github.com/mpb-com/dsci-utilities.git@main#egg=dsci-utilities",
+    "dsci-utils @ git+https://github.com/mpb-com/dsci-utils.git@main#egg=dsci-utils",
 ]
 
 [dependency-groups]
