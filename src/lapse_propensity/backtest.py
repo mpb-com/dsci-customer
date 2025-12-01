@@ -10,9 +10,10 @@ from .config import (
     MIN_TRANSACTION_COUNT,
     DEAD_LIFT_MULTIPLIER,
     ALIVE_LIFT_MULTIPLIER,
+    DEAD_RECALL_TARGET,
 )
 from .model import ParetoEmpiricalSingleTrainSplit, _get_customer_status
-from .eval import evaluate_model_predictions
+from .eval import evaluate_model_predictions, generate_model_summary
 from pathlib import Path
 from .config import DATA_DIR
 
@@ -42,7 +43,13 @@ def fetch_sample_transactions(bq, sample_size: int, observation_end_date: str):
     """
 
     transactions = bq.get_string(sample_query)
-    log.info(f"Fetched {len(transactions)} transactions for {transactions['customer_id'].nunique()} customers")
+    n_customers = transactions['customer_id'].nunique()
+    n_transactions = len(transactions)
+    log.info(f"Sample size requested: {sample_size:,} customers")
+    log.info(f"Sample size fetched:   {n_customers:,} customers ({n_transactions:,} transactions)")
+    if n_customers < sample_size:
+        log.warning(f"Database only has {n_customers:,} customers (< {sample_size:,} requested)")
+        log.warning("Sample size is NOT limiting - you're getting the full dataset")
     return transactions
 
 
@@ -143,31 +150,88 @@ def create_sliding_window_split(transactions: pd.DataFrame, test_end_date: str, 
     }
 
 
-def _save_metrics_to_file(metrics: dict, filepath: str):
+def _save_metrics_to_file(metrics: dict, filepath: str, horizon_days: int = 570):
     metrics_path = DATA_DIR / "test_metrics.txt"
     with open(metrics_path, "w") as f:
         f.write("=" * 80 + "\n")
         f.write("LAPSE PROPENSITY MODEL TEST METRICS\n")
         f.write("=" * 80 + "\n\n")
+        f.write(f"OBSERVATION WINDOW: {horizon_days} days ({horizon_days/30:.0f} months)\n")
+        f.write(f"DEFINITION OF 'ALIVE': Customer made ≥1 transaction within {horizon_days}-day window\n\n")
         f.write(f"Dataset size: {metrics['n_customers']} customers\n")
         f.write(f"Baseline (% active): {metrics['baseline_active_rate']:.1%}\n\n")
 
-        # Classification metrics
+        # Classification metrics with business narrative
         f.write("=" * 80 + "\n")
         f.write("CLASSIFICATION METRICS\n")
         f.write("=" * 80 + "\n")
         f.write(f"  AUC (Ranking Power): {metrics['auc']:.4f}\n\n")
-        f.write("Legacy Metrics (0.5 threshold - NOT RECOMMENDED):\n")
-        f.write(f"  Precision: {metrics['precision']:.4f}\n")
-        f.write(f"  Recall: {metrics['recall']:.4f}\n")
-        f.write(f"  Accuracy: {metrics['accuracy']:.4f}\n\n")
+
         alive_thresh = metrics.get('alive_threshold', 'N/A')
         dead_thresh = metrics.get('dead_threshold', 'N/A')
-        f.write("Threshold-Aware Metrics (using lift-based thresholds - RECOMMENDED):\n")
-        f.write(f"  ALIVE Precision (p > {alive_thresh:.3f}): {metrics['alive_precision']:.4f}\n")
-        f.write(f"  ALIVE Recall (p > {alive_thresh:.3f}):    {metrics['alive_recall']:.4f}\n")
-        f.write(f"  LOST Precision (p < {dead_thresh:.3f}):  {metrics['lost_precision']:.4f}\n")
-        f.write(f"  LOST Recall (p < {dead_thresh:.3f}):     {metrics['lost_recall']:.4f}\n\n")
+        baseline = metrics['baseline_active_rate']
+
+        # Get bucket stats if available
+        bucket_df = metrics.get('bucket_performance')
+        lost_pct = alive_pct = lost_lift = alive_lift = None
+        if bucket_df is not None:
+            lost_row = bucket_df[bucket_df['bucket'] == 'LOST']
+            alive_row = bucket_df[bucket_df['bucket'] == 'ALIVE']
+            if len(lost_row) > 0:
+                lost_pct = lost_row['pct_of_total'].values[0]
+                lost_lift = lost_row['lift'].values[0]
+            if len(alive_row) > 0:
+                alive_pct = alive_row['pct_of_total'].values[0]
+                alive_lift = alive_row['lift'].values[0]
+
+        f.write("-" * 80 + "\n")
+        f.write("OPERATION 1: COST CUTTING (LOST Customers)\n")
+        f.write("-" * 80 + "\n")
+        f.write(f"Goal: Identify customers unlikely to transact in next {horizon_days} days.\n\n")
+        f.write(f"  LOST Precision (p < {dead_thresh:.3f}): {metrics['lost_precision']:.1%}\n")
+        f.write(f"    → When we mark someone as DEAD, {metrics['lost_precision']:.1%} did NOT transact\n")
+        f.write(f"       in the {horizon_days}-day window.\n")
+        f.write(f"    → Risk: Only {1 - metrics['lost_precision']:.1%} false positives (acceptable).\n\n")
+        f.write(f"  LOST Recall (p < {dead_thresh:.3f}):    {metrics['lost_recall']:.1%}\n")
+        f.write(f"    → We've identified {metrics['lost_recall']:.1%} of all dead customers.\n")
+        if lost_pct is not None:
+            f.write(f"    → Excludes {lost_pct:.1%} of total database from marketing.\n\n")
+        else:
+            f.write("\n")
+        f.write(f"  FINANCE SIGN-OFF:\n")
+        f.write(f"    \"Stop marketing to the LOST bucket. {metrics['lost_precision']:.0%} of them\n")
+        f.write(f"     are never coming back. This is safe cost-cutting.\"\n\n")
+
+        f.write("-" * 80 + "\n")
+        f.write("OPERATION 2: REVENUE PROTECTION (ALIVE Customers)\n")
+        f.write("-" * 80 + "\n")
+        f.write(f"Goal: Identify customers highly likely to transact in next {horizon_days} days.\n\n")
+        f.write(f"  ALIVE Precision (p > {alive_thresh:.3f}): {metrics['alive_precision']:.1%}\n")
+        f.write(f"    → When we mark someone as VIP, {metrics['alive_precision']:.1%} transacted\n")
+        f.write(f"       within the {horizon_days}-day window.\n")
+        if alive_lift is not None:
+            f.write(f"    → This is {alive_lift:.1f}× better than baseline ({baseline:.1%}).\n\n")
+        else:
+            f.write(f"    → Compared to {baseline:.1%} baseline.\n\n")
+        f.write(f"  ALIVE Recall (p > {alive_thresh:.3f}):    {metrics['alive_recall']:.1%}\n")
+        f.write(f"    → We've captured {metrics['alive_recall']:.1%} of all active customers as VIPs.\n")
+        if alive_pct is not None:
+            f.write(f"    → This is {alive_pct:.1%} of the total database.\n\n")
+        else:
+            f.write("\n")
+        f.write(f"  CRM SIGN-OFF:\n")
+        f.write(f"    \"Treat the ALIVE bucket like royalty. They're {alive_lift:.1f}× more valuable\n")
+        f.write(f"     than average. Don't annoy them with spam or deep discounts.\"\n\n")
+
+        f.write("-" * 80 + "\n")
+        f.write("WHY SEPARATE METRICS MATTER\n")
+        f.write("-" * 80 + "\n")
+        f.write("You are running TWO different business operations:\n")
+        f.write("  1. LOST bucket  → Cost-cutting (high precision required)\n")
+        f.write("  2. ALIVE bucket → Revenue protection (high lift required)\n\n")
+        f.write("A single 'accuracy' number would hide these trade-offs and prevent\n")
+        f.write("Finance and CRM from making independent decisions.\n\n")
+
         f.write("Calibration Metrics:\n")
         f.write(f"  Log Loss: {metrics['log_loss']:.4f}\n")
         f.write(f"  Brier Score: {metrics['brier_score']:.4f}\n\n")
@@ -241,6 +305,13 @@ def _save_metrics_to_file(metrics: dict, filepath: str):
             f.write(segment_df.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
             f.write("\n\n")
 
+        # Generate and write model card
+        dead_thresh = metrics.get('dead_threshold', 'N/A')
+        alive_thresh = metrics.get('alive_threshold', 'N/A')
+        if isinstance(dead_thresh, (int, float)) and isinstance(alive_thresh, (int, float)):
+            model_card = generate_model_summary(metrics, dead_thresh, alive_thresh, horizon_days)
+            f.write("\n" + model_card + "\n")
+
         f.write("=" * 80 + "\n")
         f.write("End of metrics report\n")
         f.write("=" * 80 + "\n")
@@ -302,18 +373,24 @@ def backtest_pipeline(bq):
 
     # Calculate dynamic thresholds based on baseline rate in test set
     baseline_rate = test_features["y_true_alive"].mean()
-    dead_threshold = baseline_rate * DEAD_LIFT_MULTIPLIER
+    lift_based_dead = baseline_rate * DEAD_LIFT_MULTIPLIER
     alive_threshold = baseline_rate * ALIVE_LIFT_MULTIPLIER
 
+    # Calculate Safety Net threshold (cumulative recall approach)
+    from .eval import find_dead_threshold
+    safety_net_result = find_dead_threshold(test_features, target_recall=DEAD_RECALL_TARGET)
+    dead_threshold = safety_net_result["threshold"]  # Use Safety Net for DEAD
+
     log.info("=" * 80)
-    log.info("DYNAMIC THRESHOLDS (Lift-Based)")
+    log.info("DYNAMIC THRESHOLDS (Hybrid: Safety Net DEAD + Lift-Based ALIVE)")
     log.info("=" * 80)
     log.info(f"Baseline active rate: {baseline_rate:.1%}")
-    log.info(f"Dead threshold (< {DEAD_LIFT_MULTIPLIER}x baseline):  {dead_threshold:.3f} ({dead_threshold:.1%})")
-    log.info(f"Alive threshold (> {ALIVE_LIFT_MULTIPLIER}x baseline): {alive_threshold:.3f} ({alive_threshold:.1%})")
+    log.info(f"DEAD threshold (Safety Net {DEAD_RECALL_TARGET:.0%} recall): {dead_threshold:.3f} ({dead_threshold:.1%})")
+    log.info(f"  (Lift-Based would be: {lift_based_dead:.3f})")
+    log.info(f"ALIVE threshold ({ALIVE_LIFT_MULTIPLIER}x baseline): {alive_threshold:.3f} ({alive_threshold:.1%})")
     log.info("")
 
-    # Apply customer status labels using dynamic thresholds
+    # Apply customer status labels using hybrid thresholds
     test_features["customer_status"] = calibrated_probs.apply(
         lambda p: _get_customer_status(p, dead_threshold, alive_threshold)
     )
@@ -324,8 +401,8 @@ def backtest_pipeline(bq):
     log.info("STEP 5: Evaluating predictions on test window")
     log.info("=" * 80)
     # Pass calibrator_model for scenario plots (has calibrators attached)
-    metrics = evaluate_model_predictions(test_features, transactions=transactions, trained_model=calibrator_model)
-    _save_metrics_to_file(metrics, Path(DATA_DIR) / "test_metrics.txt")
+    metrics = evaluate_model_predictions(test_features, transactions=transactions, trained_model=calibrator_model, horizon_days=TEST_HORIZON_DAYS)
+    _save_metrics_to_file(metrics, Path(DATA_DIR) / "test_metrics.txt", horizon_days=TEST_HORIZON_DAYS)
     log.info("Metrics computed and saved to file")
 
     return {

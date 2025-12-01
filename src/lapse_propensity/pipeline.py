@@ -3,13 +3,14 @@ from loguru import logger as log
 from lifetimes.utils import calibration_and_holdout_data
 from .features import fetch_transactions, create_btyd_features
 from .model import ParetoEmpiricalSingleTrainSplit, _get_customer_status
-from .eval import log_dataframe_stats, log_config_constants
+from .eval import log_dataframe_stats, log_config_constants, find_dead_threshold
 from .config import (
     FINAL_COLUMNS,
     TABLE_NAME,
     TEST_HORIZON_DAYS,
     DEAD_LIFT_MULTIPLIER,
     ALIVE_LIFT_MULTIPLIER,
+    DEAD_RECALL_TARGET,
 )
 
 
@@ -128,19 +129,24 @@ def pipe(bq, calibration_window_days=None):
 
     # Calculate dynamic thresholds based on calibration window baseline
     baseline_rate = calibration_features["y_true_alive"].mean()
-    dead_threshold = baseline_rate * DEAD_LIFT_MULTIPLIER
+    lift_based_dead = baseline_rate * DEAD_LIFT_MULTIPLIER
     alive_threshold = baseline_rate * ALIVE_LIFT_MULTIPLIER
 
+    # Calculate Safety Net threshold using calibration window (where we have ground truth)
+    safety_net_result = find_dead_threshold(calibration_features, target_recall=DEAD_RECALL_TARGET)
+    dead_threshold = safety_net_result["threshold"]  # Use Safety Net for DEAD
+
     log.info("=" * 80)
-    log.info("DYNAMIC THRESHOLDS (Lift-Based)")
+    log.info("DYNAMIC THRESHOLDS (Hybrid: Safety Net DEAD + Lift-Based ALIVE)")
     log.info("=" * 80)
     log.info(f"Baseline active rate (calibration window): {baseline_rate:.1%}")
-    log.info(f"LOST cutoff:    < {DEAD_LIFT_MULTIPLIER}x baseline = {dead_threshold:.3f}")
-    log.info(f"LAPSING range:  {DEAD_LIFT_MULTIPLIER}x - {ALIVE_LIFT_MULTIPLIER}x = {dead_threshold:.3f} - {alive_threshold:.3f}")
-    log.info(f"ALIVE cutoff:   > {ALIVE_LIFT_MULTIPLIER}x baseline = {alive_threshold:.3f}")
+    log.info(f"LOST cutoff (Safety Net {DEAD_RECALL_TARGET:.0%} recall):    < {dead_threshold:.3f}")
+    log.info(f"  (Lift-Based would be: {lift_based_dead:.3f})")
+    log.info(f"LAPSING range:  {dead_threshold:.3f} - {alive_threshold:.3f}")
+    log.info(f"ALIVE cutoff ({ALIVE_LIFT_MULTIPLIER}x baseline):   > {alive_threshold:.3f}")
     log.info("")
 
-    # Apply customer status labels using dynamic thresholds
+    # Apply customer status labels using hybrid thresholds
     all_features["customer_status"] = calibrated_probs.apply(
         lambda p: _get_customer_status(p, dead_threshold, alive_threshold)
     )

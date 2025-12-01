@@ -6,7 +6,11 @@ DEAD_LIFT_MULTIPLIER = 0.5  # Dead if < 0.5x baseline (worse than average)
 ALIVE_LIFT_MULTIPLIER = 2.0  # Alive if > 2.0x baseline (better than average)
 
 # Safety Net threshold (cumulative recall approach for DEAD cutoff)
-DEAD_RECALL_TARGET = 0.95  # Capture 95% of active customers (accept 5% risk of missing sales)
+DEAD_RECALL_TARGET = 0.90  # Capture 90% of active customers (accept 10% risk of missing sales)
+
+# Business constraint thresholds (shareholder-friendly approach)
+MAX_REVENUE_RISK = 0.05  # Maximum % of revenue we're willing to risk (5%)
+MIN_ALIVE_LIFT = 3.0  # Minimum lift for ALIVE bucket (3× baseline)
 
 # Empirical model decay parameters (for calculating p_alive curves, NOT for classification)
 ACTIVE_PROBABILITY_CUTOFF = 0.31  # Empirical decay curve shape parameter (NOT a classification threshold)
@@ -20,7 +24,7 @@ DATABASE_NAME = "sandbox"
 TABLE_NAME = "customer_ltv_analysis"
 
 # For testing and backtesting
-TEST_SAMPLE_SIZE = 1000000  # Sample size for testing
+TEST_SAMPLE_SIZE = 10000000  # Sample size for testing
 TEST_END_DATE = "2025-10-01"  # End of final test period (we have ground truth up to here)
 TEST_HORIZON_DAYS = 570  # Length of each test window (6 months - covers median IPT, keeps training fresh)
 MIN_TRANSACTION_COUNT = None
