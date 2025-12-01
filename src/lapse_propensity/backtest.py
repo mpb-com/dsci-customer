@@ -206,13 +206,19 @@ def _save_metrics_to_file(metrics: dict, filepath: str, horizon_days: int = 570)
         f.write("OPERATION 2: REVENUE PROTECTION (ALIVE Customers)\n")
         f.write("-" * 80 + "\n")
         f.write(f"Goal: Identify customers highly likely to transact in next {horizon_days} days.\n\n")
-        f.write(f"  ALIVE Precision (p > {alive_thresh:.3f}): {metrics['alive_precision']:.1%}\n")
-        f.write(f"    → When we mark someone as VIP, {metrics['alive_precision']:.1%} transacted\n")
-        f.write(f"       within the {horizon_days}-day window.\n")
-        if alive_lift is not None:
-            f.write(f"    → This is {alive_lift:.1f}× better than baseline ({baseline:.1%}).\n\n")
+        # Handle NaN precision when there are no customers in ALIVE bucket
+        alive_precision = metrics['alive_precision']
+        if pd.isna(alive_precision):
+            f.write(f"  ALIVE Precision (p > {alive_thresh:.3f}): N/A (no customers in bucket)\n")
+            f.write(f"    → No customers met the ALIVE threshold criteria.\n\n")
         else:
-            f.write(f"    → Compared to {baseline:.1%} baseline.\n\n")
+            f.write(f"  ALIVE Precision (p > {alive_thresh:.3f}): {alive_precision:.1%}\n")
+            f.write(f"    → When we mark someone as VIP, {alive_precision:.1%} transacted\n")
+            f.write(f"       within the {horizon_days}-day window.\n")
+            if alive_lift is not None and not pd.isna(alive_lift):
+                f.write(f"    → This is {alive_lift:.1f}× better than baseline ({baseline:.1%}).\n\n")
+            else:
+                f.write(f"    → Compared to {baseline:.1%} baseline.\n\n")
         f.write(f"  ALIVE Recall (p > {alive_thresh:.3f}):    {metrics['alive_recall']:.1%}\n")
         f.write(f"    → We've captured {metrics['alive_recall']:.1%} of all active customers as VIPs.\n")
         if alive_pct is not None:
@@ -220,8 +226,12 @@ def _save_metrics_to_file(metrics: dict, filepath: str, horizon_days: int = 570)
         else:
             f.write("\n")
         f.write(f"  CRM SIGN-OFF:\n")
-        f.write(f"    \"Treat the ALIVE bucket like royalty. They're {alive_lift:.1f}× more valuable\n")
-        f.write(f"     than average. Don't annoy them with spam or deep discounts.\"\n\n")
+        if alive_lift is not None and not pd.isna(alive_lift):
+            f.write(f"    \"Treat the ALIVE bucket like royalty. They're {alive_lift:.1f}× more valuable\n")
+            f.write(f"     than average. Don't annoy them with spam or deep discounts.\"\n\n")
+        else:
+            f.write(f"    \"Treat the ALIVE bucket with care. Don't annoy them with spam or\n")
+            f.write(f"     deep discounts.\"\n\n")
 
         f.write("-" * 80 + "\n")
         f.write("WHY SEPARATE METRICS MATTER\n")

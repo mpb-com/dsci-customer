@@ -92,6 +92,9 @@ def pipe(bq, calibration_window_days=None):
 
     calibrator_model.calibrate(calibration_features, calibration_features["y_true_alive"])
 
+    # Add p_alive predictions to calibration_features for threshold calculation
+    calibration_features["p_alive"] = calibrator_model.p_alive(calibration_features)
+
     # STEP 3: Train production model on all data up to calibration_end
     log.info("=" * 80)
     log.info("STEP 3: Training production model (uses all data up to calibration window end)")
