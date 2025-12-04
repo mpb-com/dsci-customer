@@ -3,14 +3,11 @@ from loguru import logger as log
 from lifetimes.utils import calibration_and_holdout_data
 from .features import fetch_transactions, create_btyd_features
 from .model import ParetoEmpiricalSingleTrainSplit, _get_customer_status
-from .eval import log_dataframe_stats, log_config_constants, find_dead_threshold
+from .eval import log_dataframe_stats, log_config_constants
 from .config import (
     FINAL_COLUMNS,
     TABLE_NAME,
     TEST_HORIZON_DAYS,
-    DEAD_LIFT_MULTIPLIER,
-    ALIVE_LIFT_MULTIPLIER,
-    DEAD_RECALL_TARGET,
 )
 
 
@@ -128,26 +125,29 @@ def pipe(bq, calibration_window_days=None):
 
     all_features["p_alive"] = calibrated_probs.round(4)
 
-    # Calculate dynamic thresholds based on calibration window baseline
-    baseline_rate = calibration_features["y_true_alive"].mean()
-    lift_based_dead = baseline_rate * DEAD_LIFT_MULTIPLIER
-    alive_threshold = baseline_rate * ALIVE_LIFT_MULTIPLIER
+    # Calculate business thresholds using calibration window (where we have ground truth)
+    from .eval import calculate_business_thresholds
+    from .config import MAX_REVENUE_RISK, MIN_ALIVE_LIFT
 
-    # Calculate Safety Net threshold using calibration window (where we have ground truth)
-    safety_net_result = find_dead_threshold(calibration_features, target_recall=DEAD_RECALL_TARGET)
-    dead_threshold = safety_net_result["threshold"]  # Use Safety Net for DEAD
+    business_thresholds = calculate_business_thresholds(
+        calibration_features, max_revenue_risk=MAX_REVENUE_RISK, min_alive_lift=MIN_ALIVE_LIFT
+    )
+    dead_threshold = business_thresholds["dead_threshold"]
+    alive_threshold = business_thresholds["alive_threshold"]
+    baseline_rate = calibration_features["y_true_alive"].mean()
 
     log.info("=" * 80)
-    log.info("DYNAMIC THRESHOLDS (Hybrid: Safety Net DEAD + Lift-Based ALIVE)")
+    log.info("BUSINESS THRESHOLDS (from calibration window)")
     log.info("=" * 80)
     log.info(f"Baseline active rate (calibration window): {baseline_rate:.1%}")
-    log.info(f"LOST cutoff (Safety Net {DEAD_RECALL_TARGET:.0%} recall):    < {dead_threshold:.3f}")
-    log.info(f"  (Lift-Based would be: {lift_based_dead:.3f})")
+    log.info(f"ALIVE threshold (>{MIN_ALIVE_LIFT:.1f}x baseline): {alive_threshold:.3f} ({alive_threshold:.1%})")
+    log.info(f"  → Actual lift: {business_thresholds['actual_alive_lift']:.2f}x")
+    log.info(f"DEAD threshold (<{MAX_REVENUE_RISK:.1%} revenue risk): {dead_threshold:.3f} ({dead_threshold:.1%})")
+    log.info(f"  → Actual risk: {business_thresholds['actual_revenue_risk']:.1%} of active customers excluded")
     log.info(f"LAPSING range:  {dead_threshold:.3f} - {alive_threshold:.3f}")
-    log.info(f"ALIVE cutoff ({ALIVE_LIFT_MULTIPLIER}x baseline):   > {alive_threshold:.3f}")
     log.info("")
 
-    # Apply customer status labels using hybrid thresholds
+    # Apply customer status labels using business thresholds
     all_features["customer_status"] = calibrated_probs.apply(
         lambda p: _get_customer_status(p, dead_threshold, alive_threshold)
     )

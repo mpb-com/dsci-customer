@@ -22,12 +22,12 @@ class CustomerStatus:
 
 
 def _get_customer_status(p_alive: float, dead_threshold: float, alive_threshold: float) -> str:
-    """Determine customer status based on p_alive and dynamic thresholds.
+    """Determine customer status based on p_alive and business thresholds.
 
     Args:
         p_alive: Probability customer is alive
-        dead_threshold: Threshold below which customer is considered LOST (baseline × 0.5)
-        alive_threshold: Threshold above which customer is considered ALIVE (baseline × 2.0)
+        dead_threshold: Threshold below which customer is considered LOST (max 5% revenue risk)
+        alive_threshold: Threshold above which customer is considered ALIVE (2× baseline)
 
     Returns:
         Customer status: 'lost', 'lapsing', or 'alive'

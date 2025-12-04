@@ -1,16 +1,12 @@
 from pathlib import Path
 
 
-# Lift-based threshold multipliers (relative to baseline - window-agnostic)
-DEAD_LIFT_MULTIPLIER = 0.5  # Dead if < 0.5x baseline (worse than average)
-ALIVE_LIFT_MULTIPLIER = 2.0  # Alive if > 2.0x baseline (better than average)
+# Business constraint thresholds
+MAX_REVENUE_RISK = 0.05  # Maximum % of active customers excluded from DEAD bucket (5% revenue risk)
+MIN_ALIVE_LIFT = 2.0  # Probability threshold for ALIVE bucket (2× baseline)
 
-# Safety Net threshold (cumulative recall approach for DEAD cutoff)
-DEAD_RECALL_TARGET = 0.90  # Capture 90% of active customers (accept 10% risk of missing sales)
-
-# Business constraint thresholds (shareholder-friendly approach)
-MAX_REVENUE_RISK = 0.05  # Maximum % of revenue we're willing to risk (5%)
-MIN_ALIVE_LIFT = 3.0  # Minimum lift for ALIVE bucket (3× baseline)
+# Safety Net threshold (alternative approach for comparison - not used for classification)
+DEAD_RECALL_TARGET = 0.90  # Capture 90% of active customers (for comparison/logging only)
 
 # Empirical model decay parameters (for calculating p_alive curves, NOT for classification)
 ACTIVE_PROBABILITY_CUTOFF = 0.31  # Empirical decay curve shape parameter (NOT a classification threshold)

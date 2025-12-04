@@ -8,9 +8,6 @@ from .config import (
     TEST_HORIZON_DAYS,
     TEST_SAMPLE_SIZE,
     MIN_TRANSACTION_COUNT,
-    DEAD_LIFT_MULTIPLIER,
-    ALIVE_LIFT_MULTIPLIER,
-    DEAD_RECALL_TARGET,
 )
 from .model import ParetoEmpiricalSingleTrainSplit, _get_customer_status
 from .eval import evaluate_model_predictions, generate_model_summary
@@ -330,6 +327,9 @@ def _save_metrics_to_file(metrics: dict, filepath: str, horizon_days: int = 570)
 def backtest_pipeline(bq):
     log.info("Starting backtest pipeline for lapse propensity model (production-style calibration)")
 
+    # Ensure output directory exists
+    Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
+
     # Fetch sample transactions up to test end date
     transactions = fetch_sample_transactions(bq, TEST_SAMPLE_SIZE, TEST_END_DATE)
 
@@ -381,29 +381,28 @@ def backtest_pipeline(bq):
 
     test_features["p_alive"] = calibrated_probs
 
-    # Calculate dynamic thresholds based on baseline rate in test set
+    # Calculate business thresholds
+    from .eval import calculate_business_thresholds
+    from .config import MAX_REVENUE_RISK, MIN_ALIVE_LIFT
+
+    business_thresholds = calculate_business_thresholds(
+        test_features, max_revenue_risk=MAX_REVENUE_RISK, min_alive_lift=MIN_ALIVE_LIFT
+    )
+    dead_threshold = business_thresholds["dead_threshold"]
+    alive_threshold = business_thresholds["alive_threshold"]
     baseline_rate = test_features["y_true_alive"].mean()
-    lift_based_dead = baseline_rate * DEAD_LIFT_MULTIPLIER
-    alive_threshold = baseline_rate * ALIVE_LIFT_MULTIPLIER
-
-    # Calculate Safety Net threshold (cumulative recall approach)
-    from .eval import find_dead_threshold
-
-    safety_net_result = find_dead_threshold(test_features, target_recall=DEAD_RECALL_TARGET)
-    dead_threshold = safety_net_result["threshold"]  # Use Safety Net for DEAD
 
     log.info("=" * 80)
-    log.info("DYNAMIC THRESHOLDS (Hybrid: Safety Net DEAD + Lift-Based ALIVE)")
+    log.info("BUSINESS THRESHOLDS")
     log.info("=" * 80)
     log.info(f"Baseline active rate: {baseline_rate:.1%}")
-    log.info(
-        f"DEAD threshold (Safety Net {DEAD_RECALL_TARGET:.0%} recall): {dead_threshold:.3f} ({dead_threshold:.1%})"
-    )
-    log.info(f"  (Lift-Based would be: {lift_based_dead:.3f})")
-    log.info(f"ALIVE threshold ({ALIVE_LIFT_MULTIPLIER}x baseline): {alive_threshold:.3f} ({alive_threshold:.1%})")
+    log.info(f"ALIVE threshold (>{MIN_ALIVE_LIFT:.1f}x baseline): {alive_threshold:.3f} ({alive_threshold:.1%})")
+    log.info(f"  → Actual lift: {business_thresholds['actual_alive_lift']:.2f}x")
+    log.info(f"DEAD threshold (<{MAX_REVENUE_RISK:.1%} revenue risk): {dead_threshold:.3f} ({dead_threshold:.1%})")
+    log.info(f"  → Actual risk: {business_thresholds['actual_revenue_risk']:.1%} of active customers excluded")
     log.info("")
 
-    # Apply customer status labels using hybrid thresholds
+    # Apply customer status labels using business thresholds
     test_features["customer_status"] = calibrated_probs.apply(
         lambda p: _get_customer_status(p, dead_threshold, alive_threshold)
     )

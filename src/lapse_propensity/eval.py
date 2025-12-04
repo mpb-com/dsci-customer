@@ -7,8 +7,6 @@ from .config import (
     PARETO_PENALIZER,
     TRANSACTION_EMPIRICAL_CUTOFF,
     MAX_FREQUENCY_CUTOFF,
-    DEAD_LIFT_MULTIPLIER,
-    ALIVE_LIFT_MULTIPLIER,
     DEAD_RECALL_TARGET,
     MAX_REVENUE_RISK,
     MIN_ALIVE_LIFT,
@@ -47,8 +45,8 @@ def log_dataframe_stats(df: pd.DataFrame, name: str):
 def log_config_constants():
     """Log all configuration constants"""
     log.info("Configuration constants:")
-    log.info(f"  DEAD_LIFT_MULTIPLIER: {DEAD_LIFT_MULTIPLIER}x baseline (threshold for LOST)")
-    log.info(f"  ALIVE_LIFT_MULTIPLIER: {ALIVE_LIFT_MULTIPLIER}x baseline (threshold for ALIVE)")
+    log.info(f"  MAX_REVENUE_RISK: {MAX_REVENUE_RISK:.1%} (max % of active customers in DEAD bucket)")
+    log.info(f"  MIN_ALIVE_LIFT: {MIN_ALIVE_LIFT}x baseline (ALIVE threshold multiplier)")
     log.info(f"  ALIVE_CUTOFF_DAYS: {ALIVE_CUTOFF_DAYS} (empirical decay parameter)")
     log.info(f"  LAPSING_CUTOFF_DAYS: {LAPSING_CUTOFF_DAYS} (empirical decay parameter)")
     log.info(f"  PARETO_PENALIZER: {PARETO_PENALIZER}")
@@ -62,8 +60,16 @@ def create_calibration_curve(y_true: np.ndarray, y_pred_proba: np.ndarray, ax: p
         y_true, y_pred_proba, n_bins=10, strategy="quantile"
     )
 
+    # Also compute calibration for dead predictions
+    y_true_dead = 1 - y_true
+    y_pred_dead = 1 - y_pred_proba
+    fraction_of_dead, mean_predicted_dead = calibration_curve(
+        y_true_dead, y_pred_dead, n_bins=10, strategy="quantile"
+    )
+
     ax.plot([0, 1], [0, 1], "k--", label="Perfect Calibration")
-    ax.plot(mean_predicted_value, fraction_of_positives, "s-", label="Model")
+    ax.plot(mean_predicted_value, fraction_of_positives, "s-", label="Alive", color="blue")
+    ax.plot(mean_predicted_dead, fraction_of_dead, "o-", label="Dead", color="purple", alpha=0.7)
     ax.set_xlabel("Mean Predicted Probability")
     ax.set_ylabel("Fraction of Positives")
     ax.set_title("Calibration Curve")
@@ -71,17 +77,54 @@ def create_calibration_curve(y_true: np.ndarray, y_pred_proba: np.ndarray, ax: p
     ax.grid(True, alpha=0.3)
 
 
-def create_precision_recall_curve(y_true: np.ndarray, y_pred_proba: np.ndarray, ax: plt.Axes):
+def create_precision_recall_curve(
+    y_true: np.ndarray,
+    y_pred_proba: np.ndarray,
+    ax: plt.Axes,
+    alive_precision: float = None,
+    alive_recall: float = None,
+    dead_precision: float = None,
+    dead_recall: float = None,
+    revenue_risk: float = None,
+):
     """Create precision-recall curve"""
     precision, recall, thresholds = precision_recall_curve(y_true, y_pred_proba)
     avg_precision = average_precision_score(y_true, y_pred_proba)
 
-    ax.plot(recall, precision, linewidth=2, label=f"PR Curve (AP = {avg_precision:.3f})")
-    ax.axhline(y=y_true.mean(), color="r", linestyle="--", label=f"Baseline = {y_true.mean():.3f}")
+    # Also compute PR curve for dead detection
+    y_true_dead = 1 - y_true
+    y_pred_dead = 1 - y_pred_proba
+    precision_dead, recall_dead, _ = precision_recall_curve(y_true_dead, y_pred_dead)
+    avg_precision_dead = average_precision_score(y_true_dead, y_pred_dead)
+
+    ax.plot(recall, precision, linewidth=2, label=f"Alive (AP = {avg_precision:.3f})", color="blue")
+    ax.plot(recall_dead, precision_dead, linewidth=2, label=f"Dead (AP = {avg_precision_dead:.3f})", color="purple", alpha=0.7)
+
+    # Mark threshold operating points
+    if alive_precision is not None and alive_recall is not None and not np.isnan(alive_precision):
+        ax.scatter(
+            alive_recall, alive_precision, s=150, marker="*", color="darkblue",
+            edgecolors="white", linewidths=1.5, zorder=5,
+            label=f"Alive Threshold (P={alive_precision:.2f}, R={alive_recall:.2f})"
+        )
+    if dead_precision is not None and dead_recall is not None and not np.isnan(dead_precision):
+        # Add revenue risk to label
+        risk_text = f", Risk={revenue_risk:.1%}" if revenue_risk is not None and not np.isnan(revenue_risk) else ""
+        ax.scatter(
+            dead_recall, dead_precision, s=150, marker="*", color="darkviolet",
+            edgecolors="white", linewidths=1.5, zorder=5,
+            label=f"Dead Threshold (P={dead_precision:.2f}, R={dead_recall:.2f}{risk_text})"
+        )
+
+    # Baseline for each class
+    baseline_alive = y_true.mean()
+    baseline_dead = 1 - baseline_alive
+    ax.axhline(y=baseline_alive, color="blue", linestyle="--", alpha=0.3, label=f"Alive Baseline = {baseline_alive:.3f}")
+    ax.axhline(y=baseline_dead, color="purple", linestyle="--", alpha=0.3, label=f"Dead Baseline = {baseline_dead:.3f}")
     ax.set_xlabel("Recall")
     ax.set_ylabel("Precision")
     ax.set_title("Precision-Recall Curve")
-    ax.legend()
+    ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
 
@@ -270,38 +313,21 @@ def calculate_business_thresholds(
         actual_revenue_risk = 0.0
         dead_bucket_size = 0
 
-    # ALIVE THRESHOLD: Find score where lift >= min_alive_lift
-    # Try different thresholds and calculate lift for each
-    candidate_thresholds = df["p_alive"].quantile([0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99]).values
-    best_threshold = None
-    best_lift = 0
-
-    for threshold in candidate_thresholds:
-        alive_segment = df[df["p_alive"] > threshold]
-        if len(alive_segment) > 0:
-            segment_active_rate = alive_segment["y_true_alive"].mean()
-            lift = segment_active_rate / baseline_rate if baseline_rate > 0 else 0
-            if lift >= min_alive_lift and (best_threshold is None or threshold < best_threshold):
-                best_threshold = threshold
-                best_lift = lift
-
-    # Fallback: if no threshold achieves target lift, use highest lift available
-    if best_threshold is None:
-        for threshold in sorted(candidate_thresholds, reverse=True):
-            alive_segment = df[df["p_alive"] > threshold]
-            if len(alive_segment) > 10:  # Need at least 10 customers
-                segment_active_rate = alive_segment["y_true_alive"].mean()
-                lift = segment_active_rate / baseline_rate if baseline_rate > 0 else 0
-                if lift > best_lift:
-                    best_threshold = threshold
-                    best_lift = lift
-
-    alive_threshold = best_threshold if best_threshold is not None else df["p_alive"].quantile(0.9)
+    # ALIVE THRESHOLD: Simply min_alive_lift × baseline
+    # This is the probability cutoff, NOT a search for segment lift
+    alive_threshold = baseline_rate * min_alive_lift
 
     # Calculate bucket statistics
     lost_bucket = df[df["p_alive"] < dead_threshold]
     alive_bucket = df[df["p_alive"] > alive_threshold]
     lapsing_bucket = df[(df["p_alive"] >= dead_threshold) & (df["p_alive"] <= alive_threshold)]
+
+    # Calculate actual lift achieved by the alive bucket
+    actual_alive_lift = (
+        (alive_bucket["y_true_alive"].mean() / baseline_rate)
+        if len(alive_bucket) > 0 and baseline_rate > 0
+        else 0
+    )
 
     return {
         "dead_threshold": dead_threshold,
@@ -309,7 +335,7 @@ def calculate_business_thresholds(
         "max_revenue_risk": max_revenue_risk,
         "actual_revenue_risk": actual_revenue_risk,
         "min_alive_lift": min_alive_lift,
-        "actual_alive_lift": best_lift,
+        "actual_alive_lift": actual_alive_lift,
         "baseline_rate": baseline_rate,
         # Bucket sizes
         "lost_size": len(lost_bucket),
@@ -771,11 +797,50 @@ def create_evaluation_plots(
     axes[0, 0].legend()
     axes[0, 0].grid(True, alpha=0.3)
 
+    # Calculate threshold metrics for display on PR curve
+    y_pred_alive = (y_pred_proba > alive_threshold).astype(int)
+    y_pred_lost = (y_pred_proba < dead_threshold).astype(int)
+
+    # ALIVE metrics
+    alive_precision = (
+        ((y_pred_alive == 1) & (y_true == 1)).sum() / (y_pred_alive == 1).sum()
+        if (y_pred_alive == 1).sum() > 0
+        else np.nan
+    )
+    alive_recall = (
+        ((y_pred_alive == 1) & (y_true == 1)).sum() / (y_true == 1).sum()
+        if (y_true == 1).sum() > 0
+        else np.nan
+    )
+
+    # LOST/DEAD metrics
+    y_true_dead = 1 - y_true
+    lost_precision = (
+        ((y_pred_lost == 1) & (y_true == 0)).sum() / (y_pred_lost == 1).sum()
+        if (y_pred_lost == 1).sum() > 0
+        else np.nan
+    )
+    lost_recall = (
+        ((y_pred_lost == 1) & (y_true == 0)).sum() / (y_true == 0).sum()
+        if (y_true == 0).sum() > 0
+        else np.nan
+    )
+
+    # Revenue risk: % of alive customers below dead threshold
+    alive_below_dead_threshold = (
+        ((y_pred_proba < dead_threshold) & (y_true == 1)).sum() / (y_true == 1).sum()
+        if (y_true == 1).sum() > 0
+        else np.nan
+    )
+
     # 2. Calibration Curve
     create_calibration_curve(y_true, y_pred_proba, axes[0, 1])
 
     # 3. Precision-Recall Curve
-    create_precision_recall_curve(y_true, y_pred_proba, axes[0, 2])
+    create_precision_recall_curve(
+        y_true, y_pred_proba, axes[0, 2],
+        alive_precision, alive_recall, lost_precision, lost_recall, alive_below_dead_threshold
+    )
 
     # 4. P(alive) Distribution by Ground Truth
     active_probs = y_pred_proba[y_true == 1]
@@ -863,9 +928,11 @@ def create_evaluation_plots(
                 p_alive_history.append(0.5)  # Before first purchase
                 continue
 
+            # BTYD features are relative to first purchase
+            first_purchase_day = past_purchases[0]
             frequency = len(past_purchases) - 1  # Repeat purchases
-            recency = past_purchases[-1]  # Last purchase day
-            T = current_day  # Customer age
+            recency = past_purchases[-1] - first_purchase_day  # Time of last purchase relative to first
+            T = current_day - first_purchase_day  # Customer age since first purchase
             days_since_last = T - recency
 
             # Create feature row
@@ -1001,12 +1068,18 @@ def evaluate_model_predictions(
     except ValueError:
         brier = np.nan
 
-    # Calculate dynamic thresholds for threshold-aware metrics
-    baseline_rate = y_true.mean()
-    dead_threshold = baseline_rate * DEAD_LIFT_MULTIPLIER
-    alive_threshold = baseline_rate * ALIVE_LIFT_MULTIPLIER
+    # Calculate business thresholds FIRST (these are the correct ones to use)
+    # ALIVE: 2x baseline (MIN_ALIVE_LIFT from config)
+    # DEAD: Excludes exactly MAX_REVENUE_RISK (5%) of active customers
+    business_thresholds = calculate_business_thresholds(
+        test_features, max_revenue_risk=MAX_REVENUE_RISK, min_alive_lift=MIN_ALIVE_LIFT
+    )
 
-    # Threshold-aware classification metrics (using lift-based thresholds)
+    dead_threshold = business_thresholds["dead_threshold"]
+    alive_threshold = business_thresholds["alive_threshold"]
+    baseline_rate = y_true.mean()
+
+    # Threshold-aware classification metrics (using business thresholds)
     y_pred_alive = (y_pred_proba > alive_threshold).astype(int)  # Predicted as ALIVE
     y_pred_lost = (y_pred_proba < dead_threshold).astype(int)  # Predicted as LOST
 
@@ -1037,11 +1110,6 @@ def evaluate_model_predictions(
 
     # Safety Net threshold (Cumulative Recall approach)
     safety_net_threshold = find_dead_threshold(test_features, target_recall=DEAD_RECALL_TARGET)
-
-    # Business constraint thresholds (Shareholder-friendly)
-    business_thresholds = calculate_business_thresholds(
-        test_features, max_revenue_risk=MAX_REVENUE_RISK, min_alive_lift=MIN_ALIVE_LIFT
-    )
 
     # Bucket performance (The Acid Test)
     bucket_df = analyze_bucket_performance(test_features)
@@ -1114,44 +1182,47 @@ def evaluate_model_predictions(
         log.info("")
 
     log.info("=" * 80)
-    log.info("DYNAMIC THRESHOLDS (Lift-Based)")
+    log.info("BUSINESS THRESHOLDS (Revenue-Risk Based)")
     log.info("=" * 80)
     baseline = y_true.mean()
-    dead_val = baseline * DEAD_LIFT_MULTIPLIER
-    alive_val = baseline * ALIVE_LIFT_MULTIPLIER
     log.info(f"Baseline active rate: {baseline:.1%}")
-    log.info(f"  LOST cutoff:    < {DEAD_LIFT_MULTIPLIER}x baseline = {dead_val:.3f}")
-    log.info(
-        f"  LAPSING range:  {DEAD_LIFT_MULTIPLIER}x - {ALIVE_LIFT_MULTIPLIER}x baseline = {dead_val:.3f} - {alive_val:.3f}"
-    )
-    log.info(f"  ALIVE cutoff:   > {ALIVE_LIFT_MULTIPLIER}x baseline = {alive_val:.3f}")
+    log.info("")
+    log.info(f"  ALIVE cutoff:   > {alive_threshold:.4f}")
+    log.info(f"    → Constraint: Minimum {MIN_ALIVE_LIFT:.1f}x baseline lift")
+    log.info(f"    → Actual lift: {business_thresholds['actual_alive_lift']:.2f}x baseline")
+    log.info("")
+    log.info(f"  LOST cutoff:    < {dead_threshold:.4f}")
+    log.info(f"    → Constraint: Maximum {MAX_REVENUE_RISK:.1%} of active customers excluded")
+    log.info(f"    → Actual risk: {business_thresholds['actual_revenue_risk']:.1%} of active customers excluded")
+    log.info("")
+    log.info(f"  LAPSING range:  {dead_threshold:.4f} - {alive_threshold:.4f}")
     log.info("")
     log.info("=" * 80)
     log.info("THRESHOLD COMPARISON")
     log.info("=" * 80)
     sn_threshold = safety_net_threshold["threshold"]
     sn_pct_excluded = safety_net_threshold["pct_excluded"]
-    log.info(f"Lift-Based DEAD:     < {dead_val:.4f} ({DEAD_LIFT_MULTIPLIER}x baseline)")
-    log.info(f"Safety Net DEAD:     < {sn_threshold:.4f} ({safety_net_threshold['target_recall']:.0%} recall)")
+    log.info(f"Business DEAD:   < {dead_threshold:.4f} ({MAX_REVENUE_RISK:.0%} revenue risk)")
+    log.info(f"Safety Net DEAD: < {sn_threshold:.4f} ({safety_net_threshold['target_recall']:.0%} recall)")
     log.info("")
     log.info(f"Safety Net excludes: {sn_pct_excluded:.1%} of customers ({safety_net_threshold['n_excluded']:,})")
     log.info(f"Safety Net captures: {safety_net_threshold['actual_recall']:.1%} of active customers")
-    if sn_threshold < dead_val:
-        log.info("💡 Safety Net is MORE aggressive (lower threshold) than Lift-Based")
-    elif sn_threshold > dead_val:
-        log.info("💡 Safety Net is LESS aggressive (higher threshold) than Lift-Based")
+    if sn_threshold < dead_threshold:
+        log.info("💡 Safety Net is MORE aggressive (lower threshold) than Business threshold")
+    elif sn_threshold > dead_threshold:
+        log.info("💡 Safety Net is LESS aggressive (higher threshold) than Business threshold")
     else:
-        log.info("💡 Safety Net and Lift-Based thresholds are identical")
+        log.info("💡 Safety Net and Business thresholds are identical")
     log.info("")
     log.info("=" * 80)
     log.info("BUCKET PERFORMANCE (THE ACID TEST)")
     log.info("=" * 80)
     log.info("Does each bucket have the expected actual active rate?")
-    log.info(f"  LOST (< {DEAD_LIFT_MULTIPLIER}x baseline):     Should be below baseline ({baseline:.1%})")
+    log.info(f"  LOST (< {dead_threshold:.3f}):     Should be below baseline ({baseline:.1%})")
     log.info(
-        f"  LAPSING ({DEAD_LIFT_MULTIPLIER}x - {ALIVE_LIFT_MULTIPLIER}x): Should be near baseline ({baseline:.1%})"
+        f"  LAPSING ({dead_threshold:.3f} - {alive_threshold:.3f}): Should be near baseline ({baseline:.1%})"
     )
-    log.info(f"  ALIVE (> {ALIVE_LIFT_MULTIPLIER}x baseline):    Should be above baseline ({baseline:.1%})")
+    log.info(f"  ALIVE (> {alive_threshold:.3f}):    Should be above baseline ({baseline:.1%})")
     log.info("")
     log.info(bucket_df.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
     log.info("")
