@@ -1146,6 +1146,96 @@ def create_evaluation_plots(
     log.info(f"Saved evaluation plots to {plot_path}")
 
 
+def log_edge_case_examples(test_features: pd.DataFrame, trained_model=None):
+    """Log feature values for edge case predictions.
+
+    Shows features for:
+    - Correctly predicted churners (low p_alive, actually dead)
+    - Incorrectly predicted churners (low p_alive, actually alive) - FALSE POSITIVES
+    - Correctly predicted retained (high p_alive, actually alive)
+    - Incorrectly predicted retained (high p_alive, actually dead) - FALSE NEGATIVES
+    """
+    log.info("=" * 80)
+    log.info("EDGE CASE ANALYSIS: Understanding Model Predictions")
+    log.info("=" * 80)
+
+    # Split by actual outcome
+    dead_customers = test_features[test_features["y_true_alive"] == 0].copy()
+    alive_customers = test_features[test_features["y_true_alive"] == 1].copy()
+
+    # Get feature columns (exclude metadata)
+    if trained_model and hasattr(trained_model, 'feature_columns'):
+        feature_cols = trained_model.feature_columns
+    else:
+        excluded = ["customer_id", "y_true_alive", "y_true_txns", "p_alive", "customer_status",
+                   "frequency_holdout", "duration_holdout", "frequency_cal", "recency_cal", "T_cal", "duration_cal"]
+        feature_cols = [col for col in test_features.columns if col not in excluded]
+
+    # 1. CORRECTLY PREDICTED CHURNER (low p_alive, actually dead)
+    if len(dead_customers) > 0:
+        correct_churn = dead_customers.nsmallest(1, "p_alive").iloc[0]
+        log.info("")
+        log.info("1. CORRECTLY PREDICTED CHURNER (True Positive)")
+        log.info(f"   Customer: {correct_churn['customer_id']}")
+        log.info(f"   P(alive): {correct_churn['p_alive']:.3f}")
+        log.info(f"   Status:   {correct_churn['customer_status']}")
+        log.info(f"   Outcome:  Dead (correctly predicted)")
+        log.info("")
+        log.info("   Key Features:")
+        for col in feature_cols[:10]:  # Show top 10 features
+            if col in correct_churn.index:
+                log.info(f"     {col}: {correct_churn[col]}")
+
+    # 2. INCORRECTLY PREDICTED CHURNER (low p_alive, actually alive) - FALSE POSITIVE
+    if len(alive_customers) > 0:
+        false_positive = alive_customers.nsmallest(1, "p_alive").iloc[0]
+        log.info("")
+        log.info("2. INCORRECTLY PREDICTED CHURNER (False Positive - Revenue Risk!)")
+        log.info(f"   Customer: {false_positive['customer_id']}")
+        log.info(f"   P(alive): {false_positive['p_alive']:.3f}")
+        log.info(f"   Status:   {false_positive['customer_status']}")
+        log.info(f"   Outcome:  Alive (incorrectly predicted as dead)")
+        log.info("")
+        log.info("   Key Features:")
+        for col in feature_cols[:10]:
+            if col in false_positive.index:
+                log.info(f"     {col}: {false_positive[col]}")
+
+    # 3. CORRECTLY PREDICTED RETAINED (high p_alive, actually alive)
+    if len(alive_customers) > 0:
+        correct_retain = alive_customers.nlargest(1, "p_alive").iloc[0]
+        log.info("")
+        log.info("3. CORRECTLY PREDICTED RETAINED (True Negative)")
+        log.info(f"   Customer: {correct_retain['customer_id']}")
+        log.info(f"   P(alive): {correct_retain['p_alive']:.3f}")
+        log.info(f"   Status:   {correct_retain['customer_status']}")
+        log.info(f"   Outcome:  Alive (correctly predicted)")
+        log.info("")
+        log.info("   Key Features:")
+        for col in feature_cols[:10]:
+            if col in correct_retain.index:
+                log.info(f"     {col}: {correct_retain[col]}")
+
+    # 4. INCORRECTLY PREDICTED RETAINED (high p_alive, actually dead) - FALSE NEGATIVE
+    if len(dead_customers) > 0:
+        false_negative = dead_customers.nlargest(1, "p_alive").iloc[0]
+        log.info("")
+        log.info("4. INCORRECTLY PREDICTED RETAINED (False Negative - Missed Intervention!)")
+        log.info(f"   Customer: {false_negative['customer_id']}")
+        log.info(f"   P(alive): {false_negative['p_alive']:.3f}")
+        log.info(f"   Status:   {false_negative['customer_status']}")
+        log.info(f"   Outcome:  Dead (incorrectly predicted as alive)")
+        log.info("")
+        log.info("   Key Features:")
+        for col in feature_cols[:10]:
+            if col in false_negative.index:
+                log.info(f"     {col}: {false_negative[col]}")
+
+    log.info("")
+    log.info("=" * 80)
+    log.info("")
+
+
 def create_shap_plots(
     trained_model,
     test_features: pd.DataFrame,
@@ -1348,6 +1438,9 @@ def evaluate_model_predictions(
 
     # Generate SHAP plots for XGBoost models
     create_shap_plots(trained_model, test_features, model_name)
+
+    # Log edge case examples
+    log_edge_case_examples(test_features, trained_model)
 
     # Log results
     log.info("=" * 80)

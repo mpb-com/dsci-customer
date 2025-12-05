@@ -42,8 +42,8 @@ DATA_DIR = Path(__file__).parent.parent.parent / "data"
 #
 # Available models: See model.py for available classes
 # Available feature engineers: See features.py for available classes
-MODEL_CLASS_NAME ="ParetoEmpiricalSingleTrainSplit"  # Name of model class to use
-FEATURE_ENGINEER_CLASS_NAME ="BTYDFeatureEngineer"  # Name of feature engineer class to use
+MODEL_CLASS_NAME = "XGBoostLapseModel"  # "ParetoEmpiricalSingleTrainSplit"  # Name of model class to use
+FEATURE_ENGINEER_CLASS_NAME ="XGBoostFeatureEngineer" #  "BTYDFeatureEngineer"  # Name of feature engineer class to use
 
 # Don't touch!
 PARETO_PENALIZER = 0.001
