@@ -9,7 +9,7 @@ from .config import (
     TEST_SAMPLE_SIZE,
     MIN_TRANSACTION_COUNT,
 )
-from .model import ParetoEmpiricalSingleTrainSplit, _get_customer_status
+from .model import create_model_from_config, _get_customer_status
 from .eval import evaluate_model_predictions, generate_model_summary
 from pathlib import Path
 from .config import DATA_DIR
@@ -324,8 +324,16 @@ def _save_metrics_to_file(metrics: dict, filepath: str, horizon_days: int = 570)
         f.write("=" * 80 + "\n")
 
 
-def backtest_pipeline(bq):
-    log.info("Starting backtest pipeline for lapse propensity model (production-style calibration)")
+def backtest_pipeline(bq, use_calibration: bool = True):
+    """Run backtest pipeline for lapse propensity model.
+
+    Args:
+        bq: BigQuery client
+        use_calibration: If True, use isotonic calibration and business thresholds.
+                        If False, use raw predictions with fixed thresholds (0.3, 0.6)
+    """
+    mode = "with calibration" if use_calibration else "WITHOUT calibration (fixed thresholds)"
+    log.info(f"Starting backtest pipeline for lapse propensity model ({mode})")
 
     # Ensure output directory exists
     Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
@@ -340,70 +348,97 @@ def backtest_pipeline(bq):
     prod_train_features = split_data["prod_train_features"]
     test_features = split_data["test_features"]
 
-    # STEP 1: Train "old" model to learn systematic bias
-    log.info("=" * 80)
-    log.info("STEP 1: Training calibrator model (learns systematic bias)")
-    log.info("=" * 80)
-    calibrator_model = ParetoEmpiricalSingleTrainSplit()
-    calibrator_model.fit(calibrator_train_features)
+    if use_calibration:
+        # STEP 1: Train "old" model to learn systematic bias
+        log.info("=" * 80)
+        log.info("STEP 1: Training calibrator model (learns systematic bias)")
+        log.info("=" * 80)
+        calibrator_model = create_model_from_config()
+        calibrator_model.fit(calibrator_train_features)
 
-    # STEP 2: Calibrate on calibration window (learns the "translation layer")
-    log.info("=" * 80)
-    log.info("STEP 2: Learning calibration (isotonic regression on calibration window)")
-    log.info("=" * 80)
-    calibrator_model.calibrate(calibrator_cal_features, calibrator_cal_features["y_true_alive"])
+        # STEP 2: Calibrate on calibration window (learns the "translation layer")
+        log.info("=" * 80)
+        log.info("STEP 2: Learning calibration (isotonic regression on calibration window)")
+        log.info("=" * 80)
+        calibrator_model.calibrate(calibrator_cal_features, calibrator_cal_features["y_true_alive"])
 
-    # STEP 3: Train "fresh" production model on all available data
-    log.info("=" * 80)
-    log.info("STEP 3: Training production model (uses all data up to test window)")
-    log.info("=" * 80)
-    prod_model = ParetoEmpiricalSingleTrainSplit()
-    prod_model.fit(prod_train_features)
+        # STEP 3: Train "fresh" production model on all available data
+        log.info("=" * 80)
+        log.info("STEP 3: Training production model (uses all data up to test window)")
+        log.info("=" * 80)
+        prod_model = create_model_from_config()
+        prod_model.fit(prod_train_features)
 
-    # STEP 4: Apply calibration from old model to fresh model predictions
-    log.info("=" * 80)
-    log.info("STEP 4: Applying calibration to production model predictions")
-    log.info("=" * 80)
+        # STEP 4: Apply calibration from old model to fresh model predictions
+        log.info("=" * 80)
+        log.info("STEP 4: Applying calibration to production model predictions")
+        log.info("=" * 80)
 
-    # Get uncalibrated predictions from production model
-    uncalibrated_probs = prod_model.p_alive(test_features)
+        # Get uncalibrated predictions from production model
+        uncalibrated_probs = prod_model.p_alive(test_features)
 
-    # Apply the calibration "glasses" learned from the old model
-    # We do this manually by extracting the calibrators and applying them
-    pareto_mask = test_features["frequency"] > 0  # Same logic as in model
-    calibrated_probs = uncalibrated_probs.copy()
+        # Apply the calibration "glasses" learned from the old model
+        pareto_mask = test_features["frequency"] > 0
+        calibrated_probs = uncalibrated_probs.copy()
 
-    if calibrator_model.pareto.calibrator is not None:
-        calibrated_probs[pareto_mask] = calibrator_model.pareto.calibrator.predict(uncalibrated_probs[pareto_mask])
+        if calibrator_model.pareto.calibrator is not None:
+            calibrated_probs[pareto_mask] = calibrator_model.pareto.calibrator.predict(uncalibrated_probs[pareto_mask])
 
-    if calibrator_model.empirical.calibrator is not None:
-        calibrated_probs[~pareto_mask] = calibrator_model.empirical.calibrator.predict(uncalibrated_probs[~pareto_mask])
+        if calibrator_model.empirical.calibrator is not None:
+            calibrated_probs[~pareto_mask] = calibrator_model.empirical.calibrator.predict(
+                uncalibrated_probs[~pareto_mask]
+            )
 
-    test_features["p_alive"] = calibrated_probs
+        test_features["p_alive"] = calibrated_probs
 
-    # Calculate business thresholds
-    from .eval import calculate_business_thresholds
-    from .config import MAX_REVENUE_RISK, MIN_ALIVE_LIFT
+        # Calculate business thresholds
+        from .eval import calculate_business_thresholds
+        from .config import MAX_REVENUE_RISK, MIN_ALIVE_LIFT
 
-    business_thresholds = calculate_business_thresholds(
-        test_features, max_revenue_risk=MAX_REVENUE_RISK, min_alive_lift=MIN_ALIVE_LIFT
-    )
-    dead_threshold = business_thresholds["dead_threshold"]
-    alive_threshold = business_thresholds["alive_threshold"]
-    baseline_rate = test_features["y_true_alive"].mean()
+        business_thresholds = calculate_business_thresholds(
+            test_features, max_revenue_risk=MAX_REVENUE_RISK, min_alive_lift=MIN_ALIVE_LIFT
+        )
+        dead_threshold = business_thresholds["dead_threshold"]
+        alive_threshold = business_thresholds["alive_threshold"]
+        baseline_rate = test_features["y_true_alive"].mean()
 
-    log.info("=" * 80)
-    log.info("BUSINESS THRESHOLDS")
-    log.info("=" * 80)
-    log.info(f"Baseline active rate: {baseline_rate:.1%}")
-    log.info(f"ALIVE threshold (>{MIN_ALIVE_LIFT:.1f}x baseline): {alive_threshold:.3f} ({alive_threshold:.1%})")
-    log.info(f"  → Actual lift: {business_thresholds['actual_alive_lift']:.2f}x")
-    log.info(f"DEAD threshold (<{MAX_REVENUE_RISK:.1%} revenue risk): {dead_threshold:.3f} ({dead_threshold:.1%})")
-    log.info(f"  → Actual risk: {business_thresholds['actual_revenue_risk']:.1%} of active customers excluded")
-    log.info("")
+        log.info("=" * 80)
+        log.info("BUSINESS THRESHOLDS")
+        log.info("=" * 80)
+        log.info(f"Baseline active rate: {baseline_rate:.1%}")
+        log.info(f"ALIVE threshold (>{MIN_ALIVE_LIFT:.1f}x baseline): {alive_threshold:.3f} ({alive_threshold:.1%})")
+        log.info(f"  → Actual lift: {business_thresholds['actual_alive_lift']:.2f}x")
+        log.info(f"DEAD threshold (<{MAX_REVENUE_RISK:.1%} revenue risk): {dead_threshold:.3f} ({dead_threshold:.1%})")
+        log.info(f"  → Actual risk: {business_thresholds['actual_revenue_risk']:.1%} of active customers excluded")
+        log.info("")
 
-    # Apply customer status labels using business thresholds
-    test_features["customer_status"] = calibrated_probs.apply(
+    else:
+        # NO CALIBRATION: Use raw predictions with fixed thresholds
+        log.info("=" * 80)
+        log.info("SKIPPING CALIBRATION - Using raw predictions")
+        log.info("=" * 80)
+
+        # Train single model on all available data
+        prod_model = create_model_from_config()
+        prod_model.fit(prod_train_features)
+        calibrator_model = prod_model  # For scenario plots
+
+        # Get raw predictions
+        test_features["p_alive"] = prod_model.p_alive(test_features)
+
+        # Use fixed thresholds
+        dead_threshold = 0.3
+        alive_threshold = 0.6
+
+        log.info("=" * 80)
+        log.info("FIXED THRESHOLDS (no calibration)")
+        log.info("=" * 80)
+        log.info(f"DEAD threshold:  < {dead_threshold}")
+        log.info(f"ALIVE threshold: > {alive_threshold}")
+        log.info("")
+
+    # Apply customer status labels
+    test_features["customer_status"] = test_features["p_alive"].apply(
         lambda p: _get_customer_status(p, dead_threshold, alive_threshold)
     )
     test_features.to_parquet(Path(DATA_DIR) / "test_results.parquet")
@@ -413,8 +448,14 @@ def backtest_pipeline(bq):
     log.info("STEP 5: Evaluating predictions on test window")
     log.info("=" * 80)
     # Pass calibrator_model for scenario plots (has calibrators attached)
+    # Pass the thresholds we calculated to ensure plots use the correct ones
     metrics = evaluate_model_predictions(
-        test_features, transactions=transactions, trained_model=calibrator_model, horizon_days=TEST_HORIZON_DAYS
+        test_features,
+        transactions=transactions,
+        trained_model=calibrator_model,
+        horizon_days=TEST_HORIZON_DAYS,
+        dead_threshold=dead_threshold,
+        alive_threshold=alive_threshold,
     )
     _save_metrics_to_file(metrics, Path(DATA_DIR) / "test_metrics.txt", horizon_days=TEST_HORIZON_DAYS)
     log.info("Metrics computed and saved to file")

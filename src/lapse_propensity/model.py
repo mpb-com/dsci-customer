@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from abc import ABC, abstractmethod
 from lifetimes import ParetoNBDFitter
 from loguru import logger as log
 from sklearn.isotonic import IsotonicRegression
@@ -11,6 +12,45 @@ from .config import (
     PARETO_PENALIZER,
     TRANSACTION_EMPIRICAL_CUTOFF,
 )
+
+
+class BaseLapseModel(ABC):
+    """Abstract base class for lapse propensity models.
+
+    All lapse models must implement these core methods to be compatible
+    with the pipeline and backtesting infrastructure.
+    """
+
+    @abstractmethod
+    def fit(self, df: pd.DataFrame) -> None:
+        """Train the model on customer features.
+
+        Args:
+            df: DataFrame with BTYD features (frequency, recency, T, days_since_last)
+        """
+        pass
+
+    @abstractmethod
+    def calibrate(self, df: pd.DataFrame, y_true: pd.Series) -> None:
+        """Calibrate model predictions using isotonic regression.
+
+        Args:
+            df: DataFrame with BTYD features
+            y_true: Ground truth labels (1 = active, 0 = inactive)
+        """
+        pass
+
+    @abstractmethod
+    def p_alive(self, df: pd.DataFrame) -> pd.Series:
+        """Predict probability that each customer is alive.
+
+        Args:
+            df: DataFrame with BTYD features
+
+        Returns:
+            Series of probabilities (0-1) with same index as df
+        """
+        pass
 
 
 class CustomerStatus:
@@ -116,14 +156,20 @@ class ParetoNBD:
         return uncalibrated
 
 
-class ParetoEmpiricalSingleTrainSplit:
+class ParetoEmpiricalSingleTrainSplit(BaseLapseModel):
+    """Hybrid model combining Pareto/NBD for repeat buyers and empirical decay for new customers.
+
+    This model switches between two sub-models based on transaction frequency:
+    - Pareto/NBD for customers with frequency > transaction_cutoff
+    - Empirical exponential decay for customers with frequency <= transaction_cutoff
+    """
+
     def __init__(
         self,
         alive_cutoff_days=ALIVE_CUTOFF_DAYS,
         lapsing_cutoff_days=LAPSING_CUTOFF_DAYS,
         transaction_cutoff=TRANSACTION_EMPIRICAL_CUTOFF,
     ):
-        ParetoNBD.__init__(self)
         self.pareto = ParetoNBD()
         self.empirical = Empirical(alive_cutoff_days, lapsing_cutoff_days)
         self.name = f"ParetoESTNS_{alive_cutoff_days}_{lapsing_cutoff_days}"
@@ -187,3 +233,78 @@ class ParetoEmpiricalSingleTrainSplit:
         """
         probs = self.p_alive(df)
         return probs.apply(lambda p: _get_customer_status(p, dead_threshold, alive_threshold))
+
+
+def get_model_class(model_class_name: str):
+    """Get model class by name.
+
+    Args:
+        model_class_name: Name of the model class (e.g., 'ParetoEmpiricalSingleTrainSplit')
+
+    Returns:
+        Model class that inherits from BaseLapseModel
+
+    Raises:
+        ValueError: If model class name is not found or doesn't inherit from BaseLapseModel
+    """
+    # Get the class from the current module's globals
+    model_class = globals().get(model_class_name)
+
+    if model_class is None:
+        available_models = [
+            name for name, obj in globals().items()
+            if isinstance(obj, type) and issubclass(obj, BaseLapseModel) and obj != BaseLapseModel
+        ]
+        raise ValueError(
+            f"Model class '{model_class_name}' not found. "
+            f"Available models: {', '.join(available_models)}"
+        )
+
+    if not issubclass(model_class, BaseLapseModel):
+        raise ValueError(
+            f"Model class '{model_class_name}' must inherit from BaseLapseModel"
+        )
+
+    return model_class
+
+
+def create_model_from_config():
+    """Create model instance from config.
+
+    Returns:
+        Model instance based on MODEL_CLASS_NAME in config
+    """
+    from .config import MODEL_CLASS_NAME
+
+    model_class = get_model_class(MODEL_CLASS_NAME)
+    return model_class()
+
+
+# Example: How to create a new model
+# ====================================
+#
+# class MyCustomModel(BaseLapseModel):
+#     """My custom lapse propensity model."""
+#
+#     def __init__(self):
+#         self.name = "MyCustomModel"
+#         # Add your custom initialization here
+#
+#     def fit(self, df: pd.DataFrame) -> None:
+#         """Train your model on the data."""
+#         # Implement your training logic
+#         pass
+#
+#     def calibrate(self, df: pd.DataFrame, y_true: pd.Series) -> None:
+#         """Calibrate your model (optional - can use isotonic regression)."""
+#         # Implement calibration logic
+#         pass
+#
+#     def p_alive(self, df: pd.DataFrame) -> pd.Series:
+#         """Return probability predictions."""
+#         # Implement prediction logic
+#         # Must return pd.Series with same index as df
+#         pass
+#
+# Then in config.py, set:
+#   MODEL_CLASS_NAME = "MyCustomModel"

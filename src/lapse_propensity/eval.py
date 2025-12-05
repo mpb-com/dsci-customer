@@ -1039,6 +1039,8 @@ def evaluate_model_predictions(
     transactions: pd.DataFrame | None = None,
     trained_model=None,
     horizon_days: int = TEST_HORIZON_DAYS,
+    dead_threshold: float | None = None,
+    alive_threshold: float | None = None,
 ):
     """Evaluate model predictions using standard classification metrics
 
@@ -1047,6 +1049,8 @@ def evaluate_model_predictions(
         transactions: Optional transaction history for purchase timing analysis
         trained_model: Optional trained model for scenario plots
         horizon_days: Observation window length in days (defines what "alive" means)
+        dead_threshold: Optional threshold for DEAD classification (if None, calculates from business rules)
+        alive_threshold: Optional threshold for ALIVE classification (if None, calculates from business rules)
     """
 
     y_true = test_features["y_true_alive"].to_numpy(dtype=np.float64)
@@ -1068,15 +1072,53 @@ def evaluate_model_predictions(
     except ValueError:
         brier = np.nan
 
-    # Calculate business thresholds FIRST (these are the correct ones to use)
-    # ALIVE: 2x baseline (MIN_ALIVE_LIFT from config)
-    # DEAD: Excludes exactly MAX_REVENUE_RISK (5%) of active customers
-    business_thresholds = calculate_business_thresholds(
-        test_features, max_revenue_risk=MAX_REVENUE_RISK, min_alive_lift=MIN_ALIVE_LIFT
-    )
+    # Use provided thresholds or calculate business thresholds
+    if dead_threshold is None or alive_threshold is None:
+        # Calculate business thresholds
+        # ALIVE: 2x baseline (MIN_ALIVE_LIFT from config)
+        # DEAD: Excludes exactly MAX_REVENUE_RISK (5%) of active customers
+        business_thresholds = calculate_business_thresholds(
+            test_features, max_revenue_risk=MAX_REVENUE_RISK, min_alive_lift=MIN_ALIVE_LIFT
+        )
+        dead_threshold = business_thresholds["dead_threshold"]
+        alive_threshold = business_thresholds["alive_threshold"]
+    else:
+        # Thresholds were provided - calculate business_thresholds for reporting only
+        business_thresholds = {
+            "dead_threshold": dead_threshold,
+            "alive_threshold": alive_threshold,
+            "max_revenue_risk": MAX_REVENUE_RISK,
+            "min_alive_lift": MIN_ALIVE_LIFT,
+        }
+        # Calculate bucket statistics for the provided thresholds
+        baseline_rate_temp = y_true.mean()
+        total_active = test_features["y_true_alive"].sum()
+        total_customers = len(test_features)
 
-    dead_threshold = business_thresholds["dead_threshold"]
-    alive_threshold = business_thresholds["alive_threshold"]
+        lost_bucket = test_features[test_features["p_alive"] < dead_threshold]
+        alive_bucket = test_features[test_features["p_alive"] > alive_threshold]
+        lapsing_bucket = test_features[(test_features["p_alive"] >= dead_threshold) & (test_features["p_alive"] <= alive_threshold)]
+
+        business_thresholds.update({
+            "baseline_rate": baseline_rate_temp,
+            "actual_revenue_risk": lost_bucket["y_true_alive"].sum() / total_active if total_active > 0 else 0,
+            "actual_alive_lift": (alive_bucket["y_true_alive"].mean() / baseline_rate_temp) if len(alive_bucket) > 0 and baseline_rate_temp > 0 else 0,
+            "lost_size": len(lost_bucket),
+            "lost_pct": len(lost_bucket) / total_customers,
+            "alive_size": len(alive_bucket),
+            "alive_pct": len(alive_bucket) / total_customers,
+            "lapsing_size": len(lapsing_bucket),
+            "lapsing_pct": len(lapsing_bucket) / total_customers,
+            "lost_active_count": lost_bucket["y_true_alive"].sum(),
+            "lost_active_pct": lost_bucket["y_true_alive"].sum() / total_active if total_active > 0 else 0,
+            "alive_active_count": alive_bucket["y_true_alive"].sum(),
+            "alive_active_pct": alive_bucket["y_true_alive"].sum() / total_active if total_active > 0 else 0,
+            "lapsing_active_count": lapsing_bucket["y_true_alive"].sum(),
+            "lapsing_active_pct": lapsing_bucket["y_true_alive"].sum() / total_active if total_active > 0 else 0,
+            "alive_precision": alive_bucket["y_true_alive"].mean() if len(alive_bucket) > 0 else 0,
+            "lost_precision": 1 - lost_bucket["y_true_alive"].mean() if len(lost_bucket) > 0 else 0,
+        })
+
     baseline_rate = y_true.mean()
 
     # Threshold-aware classification metrics (using business thresholds)

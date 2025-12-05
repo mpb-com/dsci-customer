@@ -32,6 +32,9 @@ MIN_TRANSACTION_COUNT = None
 
 DATA_DIR = Path(__file__).parent.parent.parent / "data"
 
+# Model configuration
+MODEL_CLASS_NAME = "ParetoEmpiricalSingleTrainSplit"  # Name of model class to use
+
 # Don't touch!
 PARETO_PENALIZER = 0.001
 TRANSACTION_EMPIRICAL_CUTOFF = 1
