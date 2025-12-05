@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from lifetimes.utils import calibration_and_holdout_data
 from loguru import logger as log
 import pandas as pd
-from .features import create_btyd_features
+from .features import create_feature_engineer_from_config
 from .config import (
     TEST_END_DATE,
     TEST_HORIZON_DAYS,
@@ -17,9 +17,13 @@ from .config import DATA_DIR
 
 def fetch_sample_transactions(bq, sample_size: int, observation_end_date: str):
     """Fetch sample transactions for testing with date limit and sampling"""
+    from .config import TRANSACTION_QUERY
+
     # Build HAVING clause if MIN_TRANSACTION_COUNT is set
     having_clause = f"HAVING COUNT(*) > {MIN_TRANSACTION_COUNT}" if MIN_TRANSACTION_COUNT is not None else ""
 
+    # Use TRANSACTION_QUERY from config with date filter
+    # Extract the table name and WHERE clause from config query
     sample_query = f"""
     WITH sampled_customers AS (
         SELECT customer_id
@@ -31,12 +35,8 @@ def fetch_sample_transactions(bq, sample_size: int, observation_end_date: str):
         ORDER BY RAND()
         LIMIT {sample_size}
     )
-    SELECT customer_id,
-    DATETIME(transaction_completed_datetime) as txn_date
-    FROM `mpb-data-science-dev-ab-602d.dsci_daw.STV`
-    WHERE DATE(transaction_completed_datetime) <= '{observation_end_date}'
-    AND transaction_completed_datetime is not null
-    AND customer_id IN (SELECT customer_id FROM sampled_customers)
+    {TRANSACTION_QUERY.replace('WHERE transaction_completed_datetime is not null',
+                               f"WHERE DATE(transaction_completed_datetime) <= '{observation_end_date}' AND transaction_completed_datetime is not null AND customer_id IN (SELECT customer_id FROM sampled_customers)")}
     """
 
     transactions = bq.get_string(sample_query)
@@ -51,13 +51,13 @@ def fetch_sample_transactions(bq, sample_size: int, observation_end_date: str):
 
 
 def create_sliding_window_split(transactions: pd.DataFrame, test_end_date: str, test_horizon_days: int):
-    """Create sliding window temporal split for production-style calibration
+    """Create sliding window temporal split for model training and evaluation.
 
-    This implements the production workflow in backtesting:
-    1. Train Pareto on data up to (test_end - 2*horizon)
-    2. Calibrate isotonic regression on the next horizon period
-    3. Train fresh Pareto on data up to (test_end - horizon)
-    4. Apply calibration from step 2 to predictions on final test period
+    This implements a flexible workflow that works for both supervised and unsupervised models:
+    1. Create features from transactions up to calibration_start
+    2. Add ground truth labels from calibration window
+    3. Create features from transactions up to calibration_end (for production model)
+    4. Add ground truth labels from test window (for evaluation)
 
     Args:
         transactions: Transaction data with customer_id and txn_date
@@ -67,6 +67,8 @@ def create_sliding_window_split(transactions: pd.DataFrame, test_end_date: str, 
     Returns:
         dict with calibrator_train_features, calibrator_cal_features, prod_train_features, test_features
     """
+    # Get feature engineer from config
+    feature_engineer = create_feature_engineer_from_config()
 
     # Calculate dates by working backwards from test_end
     test_end = datetime.strptime(test_end_date, "%Y-%m-%d")
@@ -74,7 +76,7 @@ def create_sliding_window_split(transactions: pd.DataFrame, test_end_date: str, 
     calibration_end = test_end - timedelta(days=test_horizon_days)
 
     log.info("=" * 80)
-    log.info("SLIDING WINDOW SPLIT (Production-Style Calibration)")
+    log.info("SLIDING WINDOW SPLIT")
     log.info("=" * 80)
     log.info(f"Calibrator Training:  [Start] → {calibration_start.strftime('%Y-%m-%d')}")
     log.info(f"Calibration Window:   {calibration_start.strftime('%Y-%m-%d')} → {calibration_end.strftime('%Y-%m-%d')}")
@@ -82,12 +84,12 @@ def create_sliding_window_split(transactions: pd.DataFrame, test_end_date: str, 
     log.info(f"Test Window:          {calibration_end.strftime('%Y-%m-%d')} → {test_end_date}")
     log.info("")
 
-    # 1. CALIBRATOR TRAINING: Fit "old" model to learn systematic bias
+    # 1. CALIBRATOR TRAINING: Create features from early data
     calibrator_train_txns = transactions[transactions["txn_date"] <= calibration_start].copy()
-    calibrator_train_features = create_btyd_features(calibrator_train_txns)
+    calibrator_train_features = feature_engineer.create_features(calibrator_train_txns)
     log.info(f"Calibrator training set: {len(calibrator_train_features)} customers")
 
-    # 2. CALIBRATION WINDOW: Get ground truth to measure bias
+    # 2. CALIBRATION WINDOW: Add ground truth labels
     cal_holdout_data_cal = calibration_and_holdout_data(
         transactions,
         customer_id_col="customer_id",
@@ -109,12 +111,12 @@ def create_sliding_window_split(transactions: pd.DataFrame, test_end_date: str, 
         f"({calibrator_cal_features['y_true_alive'].mean():.1%})"
     )
 
-    # 3. PRODUCTION TRAINING: Fit "fresh" model on all data up to test window
+    # 3. PRODUCTION TRAINING: Create features from more recent data
     prod_train_txns = transactions[transactions["txn_date"] <= calibration_end].copy()
-    prod_train_features = create_btyd_features(prod_train_txns)
+    prod_train_features = feature_engineer.create_features(prod_train_txns)
     log.info(f"Production training set: {len(prod_train_features)} customers")
 
-    # 4. TEST WINDOW: Final evaluation
+    # 4. TEST WINDOW: Add ground truth labels for evaluation
     cal_holdout_data_test = calibration_and_holdout_data(
         transactions,
         customer_id_col="customer_id",
@@ -147,11 +149,12 @@ def create_sliding_window_split(transactions: pd.DataFrame, test_end_date: str, 
     }
 
 
-def _save_metrics_to_file(metrics: dict, filepath: str, horizon_days: int = 570):
-    metrics_path = DATA_DIR / "test_metrics.txt"
+def _save_metrics_to_file(metrics: dict, filepath: str, horizon_days: int = 570, model_name: str = "Model"):
+    metrics_filename = f"test_metrics_{model_name.replace(' ', '_')}.txt"
+    metrics_path = DATA_DIR / metrics_filename
     with open(metrics_path, "w") as f:
         f.write("=" * 80 + "\n")
-        f.write("LAPSE PROPENSITY MODEL TEST METRICS\n")
+        f.write(f"LAPSE PROPENSITY MODEL TEST METRICS: {model_name}\n")
         f.write("=" * 80 + "\n\n")
         f.write(f"OBSERVATION WINDOW: {horizon_days} days ({horizon_days / 30:.0f} months)\n")
         f.write(f"DEFINITION OF 'ALIVE': Customer made ≥1 transaction within {horizon_days}-day window\n\n")
@@ -349,47 +352,62 @@ def backtest_pipeline(bq, use_calibration: bool = True):
     test_features = split_data["test_features"]
 
     if use_calibration:
-        # STEP 1: Train "old" model to learn systematic bias
-        log.info("=" * 80)
-        log.info("STEP 1: Training calibrator model (learns systematic bias)")
-        log.info("=" * 80)
         calibrator_model = create_model_from_config()
-        calibrator_model.fit(calibrator_train_features)
 
-        # STEP 2: Calibrate on calibration window (learns the "translation layer")
-        log.info("=" * 80)
-        log.info("STEP 2: Learning calibration (isotonic regression on calibration window)")
-        log.info("=" * 80)
-        calibrator_model.calibrate(calibrator_cal_features, calibrator_cal_features["y_true_alive"])
+        # Check if model needs labels for training
+        if calibrator_model.requires_labels_for_training:
+            # SUPERVISED MODEL: Train once on labeled calibration data
+            log.info("=" * 80)
+            log.info("STEP 1-3: Training supervised model on calibration window (with labels)")
+            log.info("=" * 80)
+            calibrator_model.fit(calibrator_cal_features)
+            calibrator_model.calibrate(calibrator_cal_features, calibrator_cal_features["y_true_alive"])
 
-        # STEP 3: Train "fresh" production model on all available data
-        log.info("=" * 80)
-        log.info("STEP 3: Training production model (uses all data up to test window)")
-        log.info("=" * 80)
-        prod_model = create_model_from_config()
-        prod_model.fit(prod_train_features)
+            # For supervised models, use the same model for predictions (no separate prod_model)
+            log.info("Using trained supervised model for predictions")
+            test_features["p_alive"] = calibrator_model.p_alive(test_features)
+            prod_model = calibrator_model  # Same model
 
-        # STEP 4: Apply calibration from old model to fresh model predictions
-        log.info("=" * 80)
-        log.info("STEP 4: Applying calibration to production model predictions")
-        log.info("=" * 80)
+        else:
+            # UNSUPERVISED MODEL: Traditional 3-step workflow
+            log.info("=" * 80)
+            log.info("STEP 1: Training unsupervised model (learns from transaction patterns)")
+            log.info("=" * 80)
+            calibrator_model.fit(calibrator_train_features)
 
-        # Get uncalibrated predictions from production model
-        uncalibrated_probs = prod_model.p_alive(test_features)
+            log.info("=" * 80)
+            log.info("STEP 2: Learning calibration (isotonic regression on calibration window)")
+            log.info("=" * 80)
+            calibrator_model.calibrate(calibrator_cal_features, calibrator_cal_features["y_true_alive"])
 
-        # Apply the calibration "glasses" learned from the old model
-        pareto_mask = test_features["frequency"] > 0
-        calibrated_probs = uncalibrated_probs.copy()
+            # STEP 3: Train production model on all available data
+            log.info("=" * 80)
+            log.info("STEP 3: Training production model (uses all data up to test window)")
+            log.info("=" * 80)
+            prod_model = create_model_from_config()
+            prod_model.fit(prod_train_features)
 
-        if calibrator_model.pareto.calibrator is not None:
-            calibrated_probs[pareto_mask] = calibrator_model.pareto.calibrator.predict(uncalibrated_probs[pareto_mask])
+            # STEP 4: Apply calibration from old model to fresh model predictions
+            log.info("=" * 80)
+            log.info("STEP 4: Applying calibration to production model predictions")
+            log.info("=" * 80)
 
-        if calibrator_model.empirical.calibrator is not None:
-            calibrated_probs[~pareto_mask] = calibrator_model.empirical.calibrator.predict(
-                uncalibrated_probs[~pareto_mask]
-            )
+            # Get uncalibrated predictions from production model
+            uncalibrated_probs = prod_model.p_alive(test_features)
 
-        test_features["p_alive"] = calibrated_probs
+            # Apply the calibration "glasses" learned from the old model
+            pareto_mask = test_features["frequency"] > 0
+            calibrated_probs = uncalibrated_probs.copy()
+
+            if calibrator_model.pareto.calibrator is not None:
+                calibrated_probs[pareto_mask] = calibrator_model.pareto.calibrator.predict(uncalibrated_probs[pareto_mask])
+
+            if calibrator_model.empirical.calibrator is not None:
+                calibrated_probs[~pareto_mask] = calibrator_model.empirical.calibrator.predict(
+                    uncalibrated_probs[~pareto_mask]
+                )
+
+            test_features["p_alive"] = calibrated_probs
 
         # Calculate business thresholds
         from .eval import calculate_business_thresholds
@@ -418,9 +436,18 @@ def backtest_pipeline(bq, use_calibration: bool = True):
         log.info("SKIPPING CALIBRATION - Using raw predictions")
         log.info("=" * 80)
 
-        # Train single model on all available data
+        # Train single model
         prod_model = create_model_from_config()
-        prod_model.fit(prod_train_features)
+
+        if prod_model.requires_labels_for_training:
+            # Supervised models need labels for training - use calibration window
+            log.info("Training supervised model on calibration window (with labels)")
+            prod_model.fit(calibrator_cal_features)
+        else:
+            # Unsupervised models don't need labels - use all data
+            log.info("Training unsupervised model on all available data")
+            prod_model.fit(prod_train_features)
+
         calibrator_model = prod_model  # For scenario plots
 
         # Get raw predictions
@@ -441,7 +468,12 @@ def backtest_pipeline(bq, use_calibration: bool = True):
     test_features["customer_status"] = test_features["p_alive"].apply(
         lambda p: _get_customer_status(p, dead_threshold, alive_threshold)
     )
-    test_features.to_parquet(Path(DATA_DIR) / "test_results.parquet")
+
+    # Save test results with model name in filename
+    model_name = calibrator_model.name if hasattr(calibrator_model, 'name') else 'Model'
+    test_results_filename = f"test_results_{model_name.replace(' ', '_')}.parquet"
+    test_features.to_parquet(Path(DATA_DIR) / test_results_filename)
+    log.info(f"Saved test results to {test_results_filename}")
 
     # Evaluate predictions (pass transactions for purchase timing analysis)
     log.info("=" * 80)
@@ -456,8 +488,9 @@ def backtest_pipeline(bq, use_calibration: bool = True):
         horizon_days=TEST_HORIZON_DAYS,
         dead_threshold=dead_threshold,
         alive_threshold=alive_threshold,
+        model_name=model_name,
     )
-    _save_metrics_to_file(metrics, Path(DATA_DIR) / "test_metrics.txt", horizon_days=TEST_HORIZON_DAYS)
+    _save_metrics_to_file(metrics, Path(DATA_DIR) / "test_metrics.txt", horizon_days=TEST_HORIZON_DAYS, model_name=model_name)
     log.info("Metrics computed and saved to file")
 
     return {

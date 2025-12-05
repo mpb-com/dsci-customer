@@ -21,12 +21,15 @@ class BaseLapseModel(ABC):
     with the pipeline and backtesting infrastructure.
     """
 
+    # Class attribute: Does this model need labels for training?
+    requires_labels_for_training: bool = False
+
     @abstractmethod
     def fit(self, df: pd.DataFrame) -> None:
         """Train the model on customer features.
 
         Args:
-            df: DataFrame with BTYD features (frequency, recency, T, days_since_last)
+            df: DataFrame with features (and y_true_alive if requires_labels_for_training=True)
         """
         pass
 
@@ -35,7 +38,7 @@ class BaseLapseModel(ABC):
         """Calibrate model predictions using isotonic regression.
 
         Args:
-            df: DataFrame with BTYD features
+            df: DataFrame with features
             y_true: Ground truth labels (1 = active, 0 = inactive)
         """
         pass
@@ -45,7 +48,7 @@ class BaseLapseModel(ABC):
         """Predict probability that each customer is alive.
 
         Args:
-            df: DataFrame with BTYD features
+            df: DataFrame with features
 
         Returns:
             Series of probabilities (0-1) with same index as df
@@ -280,31 +283,113 @@ def create_model_from_config():
     return model_class()
 
 
-# Example: How to create a new model
-# ====================================
-#
-# class MyCustomModel(BaseLapseModel):
-#     """My custom lapse propensity model."""
-#
-#     def __init__(self):
-#         self.name = "MyCustomModel"
-#         # Add your custom initialization here
-#
-#     def fit(self, df: pd.DataFrame) -> None:
-#         """Train your model on the data."""
-#         # Implement your training logic
-#         pass
-#
-#     def calibrate(self, df: pd.DataFrame, y_true: pd.Series) -> None:
-#         """Calibrate your model (optional - can use isotonic regression)."""
-#         # Implement calibration logic
-#         pass
-#
-#     def p_alive(self, df: pd.DataFrame) -> pd.Series:
-#         """Return probability predictions."""
-#         # Implement prediction logic
-#         # Must return pd.Series with same index as df
-#         pass
-#
-# Then in config.py, set:
-#   MODEL_CLASS_NAME = "MyCustomModel"
+class XGBoostLapseModel(BaseLapseModel):
+    """XGBoost model for lapse propensity prediction.
+
+    This is a supervised model that requires labeled data for training.
+    Unlike BTYD models, it learns from ground truth labels.
+    """
+
+    requires_labels_for_training = True
+
+    def __init__(
+        self,
+        n_estimators: int = 100,
+        max_depth: int = 5,
+        learning_rate: float = 0.1,
+        min_child_weight: int = 50,
+    ):
+        self.name = "XGBoostLapseModel"
+        try:
+            from xgboost import XGBClassifier
+            self.model = XGBClassifier(
+                n_estimators=n_estimators,
+                max_depth=max_depth,
+                learning_rate=learning_rate,
+                min_child_weight=min_child_weight,
+                random_state=42,
+                eval_metric="logloss",
+            )
+        except ImportError:
+            raise ImportError("XGBoost not installed. Run: pip install xgboost")
+
+        self.feature_columns = None
+        self.feature_medians = None  # Store median values for imputation
+
+    def fit(self, df: pd.DataFrame) -> None:
+        """Train XGBoost model.
+
+        Args:
+            df: DataFrame with features AND 'y_true_alive' column
+        """
+        if "y_true_alive" not in df.columns:
+            raise ValueError(
+                "XGBoostLapseModel requires 'y_true_alive' column for training. "
+                "This is a supervised model."
+            )
+
+        # Identify feature columns (exclude metadata, targets, and calibration columns)
+        excluded_cols = [
+            "customer_id", "y_true_alive", "y_true_txns",
+            "frequency_holdout", "duration_holdout",
+            # Calibration columns from lifetimes library
+            "frequency_cal", "recency_cal", "T_cal", "duration_cal"
+        ]
+
+        self.feature_columns = [
+            col for col in df.columns
+            if col not in excluded_cols
+        ]
+
+        X = df[self.feature_columns]
+        y = df["y_true_alive"]
+
+        # Store feature medians for imputation
+        self.feature_medians = X.median()
+
+        log.info(f"Training XGBoost on {len(df)} samples with {len(self.feature_columns)} features")
+        log.info(f"Features: {self.feature_columns}")
+        log.info(f"Class distribution: {y.value_counts().to_dict()}")
+
+        self.model.fit(X, y)
+
+        # Log feature importance
+        feature_importance = pd.DataFrame({
+            "feature": self.feature_columns,
+            "importance": self.model.feature_importances_
+        }).sort_values("importance", ascending=False)
+
+        log.info("Top 10 features by importance:")
+        log.info(f"\n{feature_importance.head(10).to_string(index=False)}")
+
+    def calibrate(self, df: pd.DataFrame, y_true: pd.Series) -> None:
+        """No calibration needed for XGBoost - probabilities are already well-calibrated."""
+        log.info("Skipping calibration for XGBoost (not needed)")
+        pass
+
+    def p_alive(self, df: pd.DataFrame) -> pd.Series:
+        """Predict probability that each customer is alive.
+
+        Args:
+            df: DataFrame with features
+
+        Returns:
+            Series of probabilities (0-1)
+        """
+        if self.feature_columns is None:
+            raise ValueError("Model not trained. Call fit() first.")
+
+        # Add missing features using training medians
+        missing_features = set(self.feature_columns) - set(df.columns)
+        if missing_features:
+            df_copy = df.copy()
+            for feature in missing_features:
+                impute_value = self.feature_medians[feature] if self.feature_medians is not None else 0
+                df_copy[feature] = impute_value
+            X = df_copy[self.feature_columns]
+        else:
+            X = df[self.feature_columns]
+
+        probs = self.model.predict_proba(X)[:, 1]  # Probability of class 1 (alive)
+
+        return pd.Series(probs, index=df.index)

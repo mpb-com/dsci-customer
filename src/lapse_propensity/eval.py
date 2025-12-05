@@ -772,9 +772,21 @@ def create_segment_analysis(test_features: pd.DataFrame) -> pd.DataFrame:
 
 
 def create_evaluation_plots(
-    test_features: pd.DataFrame, dead_threshold: float, alive_threshold: float, trained_model=None
+    test_features: pd.DataFrame,
+    dead_threshold: float,
+    alive_threshold: float,
+    trained_model=None,
+    model_name: str = "Model"
 ):
-    """Create evaluation plots for the model with dynamic thresholds"""
+    """Create evaluation plots for the model with dynamic thresholds
+
+    Args:
+        test_features: DataFrame with predictions and ground truth
+        dead_threshold: Threshold for DEAD classification
+        alive_threshold: Threshold for ALIVE classification
+        trained_model: Optional trained model for scenario plots
+        model_name: Name of the model for plot title
+    """
 
     y_true = test_features["y_true_alive"].to_numpy(dtype=np.float64)
     y_pred_proba = test_features["p_alive"].to_numpy(dtype=np.float64)
@@ -783,7 +795,7 @@ def create_evaluation_plots(
     # Set up the plot style
     plt.style.use("default")
     fig, axes = plt.subplots(3, 3, figsize=(18, 16))
-    fig.suptitle("Lapse Propensity Model Evaluation", fontsize=16, fontweight="bold")
+    fig.suptitle(f"Lapse Propensity Model Evaluation: {model_name}", fontsize=16, fontweight="bold")
 
     # 1. ROC Curve
     fpr, tpr, _ = roc_curve(y_true, y_pred_proba)
@@ -915,34 +927,133 @@ def create_evaluation_plots(
     else:
         demo_model = trained_model
 
+    # Get feature engineer from config for scenario simulation
+    from .features import create_feature_engineer_from_config
+    feature_engineer = create_feature_engineer_from_config()
+
     def simulate_customer_journey(purchase_days, max_days=1825):
-        """Simulate P(alive) over time given purchase pattern"""
+        """Simulate P(alive) over time given purchase pattern - vectorized version
+
+        Args:
+            purchase_days: List of purchase days
+            max_days: Maximum days to simulate
+        """
+        from datetime import datetime, timedelta
+
+        # All days to simulate
         days = np.arange(0, max_days, 1)
-        p_alive_history = []
+
+        # Base date for simulation
+        base_date = datetime(2024, 1, 1)
+
+        # Create all transaction snapshots at once
+        # Each "customer_id" represents a different time point
+        all_transactions = []
+        valid_days = []
 
         for current_day in days:
-            # Calculate BTYD features at this point in time
+            # Get purchases up to current day
             past_purchases = [p for p in purchase_days if p <= current_day]
 
             if len(past_purchases) == 0:
-                p_alive_history.append(0.5)  # Before first purchase
-                continue
+                continue  # Will handle separately
 
-            # BTYD features are relative to first purchase
-            first_purchase_day = past_purchases[0]
-            frequency = len(past_purchases) - 1  # Repeat purchases
-            recency = past_purchases[-1] - first_purchase_day  # Time of last purchase relative to first
-            T = current_day - first_purchase_day  # Customer age since first purchase
-            days_since_last = T - recency
+            # Create transactions for this time point, but set dates relative to observation point
+            # Key insight: Set the first purchase at a fixed point, then observation_date = base + current_day
+            observation_date = base_date + timedelta(days=int(current_day))
 
-            # Create feature row
-            features = pd.DataFrame(
-                {"frequency": [frequency], "recency": [recency], "T": [T], "days_since_last": [days_since_last]}
+            for purchase_day in past_purchases:
+                # Transaction dates are: base_date + purchase_day
+                # This way, at current_day=100, a purchase at day 0 is 100 days old
+                txn_date = base_date + timedelta(days=int(purchase_day))
+                all_transactions.append({
+                    'customer_id': current_day,
+                    'txn_date': txn_date
+                })
+
+            # Add a dummy "observation marker" transaction to set max_date
+            # We'll fix the frequency count afterwards
+            all_transactions.append({
+                'customer_id': current_day,
+                'txn_date': observation_date,
+                'is_observation_marker': True  # Flag to identify this later
+            })
+
+            valid_days.append(current_day)
+
+        if len(all_transactions) == 0:
+            # No purchases yet
+            return days, [0.5] * len(days)
+
+        # Create dataframe and separate markers from real transactions
+        transactions_df = pd.DataFrame(all_transactions)
+
+        # Extract observation dates before removing markers
+        observation_dates = transactions_df[transactions_df.get('is_observation_marker', False) == True][['customer_id', 'txn_date']].copy()
+        observation_dates.columns = ['customer_id', 'observation_date']
+
+        # Remove observation markers for feature calculation
+        transactions_sim = transactions_df[transactions_df.get('is_observation_marker', False) != True].copy()
+        transactions_sim = transactions_sim[['customer_id', 'txn_date']]  # Keep only needed columns
+
+        # Generate features for all time points at once (one customer per time point)
+        features = feature_engineer.create_features(transactions_sim)
+
+        # Fix T and days_since_last based on observation dates
+        features = features.merge(observation_dates, on='customer_id', how='left')
+
+        # Recalculate days_since_last: observation_date - last_transaction_date
+        last_txn = transactions_sim.groupby('customer_id')['txn_date'].max().reset_index()
+        last_txn.columns = ['customer_id', 'last_txn_date']
+        features = features.merge(last_txn, on='customer_id', how='left')
+
+        features['days_since_last'] = (features['observation_date'] - features['last_txn_date']).dt.days
+
+        # Recalculate T: observation_date - first_transaction_date
+        first_txn = transactions_sim.groupby('customer_id')['txn_date'].min().reset_index()
+        first_txn.columns = ['customer_id', 'first_txn_date']
+        features = features.merge(first_txn, on='customer_id', how='left')
+
+        features['T'] = (features['observation_date'] - features['first_txn_date']).dt.days
+
+        # Recalculate derived features that depend on T and days_since_last (for XGBoost)
+        if 'days_since_first_pct' in features.columns:
+            features['days_since_first_pct'] = np.where(
+                features['T'] > 0,
+                features['days_since_last'] / features['T'],
+                0
             )
 
-            # Get prediction from model
-            p_alive = demo_model.p_alive(features).iloc[0]
-            p_alive_history.append(p_alive)
+        if 'frequency_per_month' in features.columns:
+            features['frequency_per_month'] = np.where(
+                features['T'] > 0,
+                (features['frequency'] + 1) / (features['T'] / 30),
+                0
+            )
+
+        if 'recency_to_T_ratio' in features.columns:
+            features['recency_to_T_ratio'] = np.where(
+                features['T'] > 0,
+                features['recency'] / features['T'],
+                0
+            )
+
+        if 'days_since_last_normalized' in features.columns:
+            features['days_since_last_normalized'] = np.where(
+                features['avg_days_between_purchases'] > 0,
+                features['days_since_last'] / features['avg_days_between_purchases'],
+                0
+            )
+
+        # Drop helper columns
+        features = features.drop(columns=['observation_date', 'last_txn_date', 'first_txn_date'])
+
+        # Get predictions for all time points at once
+        predictions = demo_model.p_alive(features)
+
+        # Map predictions back to days
+        pred_dict = dict(zip(features['customer_id'], predictions))
+        p_alive_history = [pred_dict.get(day, 0.5) for day in days]
 
         return days, p_alive_history
 
@@ -1028,10 +1139,75 @@ def create_evaluation_plots(
 
     plt.tight_layout()
 
-    # Save plot
-    plot_path = DATA_DIR / "model_evaluation_plots.png"
+    # Save plot with model name in filename
+    plot_filename = f"model_evaluation_plots_{model_name.replace(' ', '_')}.png"
+    plot_path = DATA_DIR / plot_filename
     plt.savefig(plot_path, dpi=150, bbox_inches="tight")
     log.info(f"Saved evaluation plots to {plot_path}")
+
+
+def create_shap_plots(
+    trained_model,
+    test_features: pd.DataFrame,
+    model_name: str = "Model"
+):
+    """Create SHAP value plots for XGBoost models.
+
+    Args:
+        trained_model: Trained model instance (must be XGBoostLapseModel)
+        test_features: DataFrame with features used for prediction
+        model_name: Name of the model for filename
+    """
+    # Only generate SHAP for XGBoost models
+    if not hasattr(trained_model, 'model') or trained_model.__class__.__name__ != 'XGBoostLapseModel':
+        log.info(f"Skipping SHAP plots for {model_name} (not XGBoost)")
+        return
+
+    import shap
+
+    log.info("=" * 80)
+    log.info("GENERATING SHAP VALUE PLOTS")
+    log.info("=" * 80)
+
+    # Get feature columns and data
+    feature_columns = trained_model.feature_columns
+    X_test = test_features[feature_columns]
+
+    # Create TreeExplainer (optimized for tree-based models)
+    explainer = shap.TreeExplainer(trained_model.model)
+
+    # Calculate SHAP values for test set
+    # For large datasets, sample to avoid memory issues
+    if len(X_test) > 5000:
+        log.info(f"Sampling 5000 from {len(X_test)} samples for SHAP calculation")
+        X_sample = X_test.sample(n=5000, random_state=42)
+    else:
+        X_sample = X_test
+
+    log.info(f"Calculating SHAP values for {len(X_sample)} samples...")
+    shap_values = explainer.shap_values(X_sample)
+
+    # Create summary plot
+    fig, ax = plt.subplots(figsize=(12, 8))
+    shap.summary_plot(
+        shap_values,
+        X_sample,
+        plot_type="dot",
+        show=False,
+        max_display=20  # Show top 20 features
+    )
+
+    plt.title(f"SHAP Feature Importance: {model_name}", fontsize=14, fontweight="bold", pad=20)
+    plt.tight_layout()
+
+    # Save plot
+    shap_filename = f"shap_summary_{model_name.replace(' ', '_')}.png"
+    shap_path = DATA_DIR / shap_filename
+    plt.savefig(shap_path, dpi=150, bbox_inches="tight")
+    log.info(f"Saved SHAP summary plot to {shap_path}")
+    plt.close()
+
+    log.info("=" * 80)
 
 
 def evaluate_model_predictions(
@@ -1041,6 +1217,7 @@ def evaluate_model_predictions(
     horizon_days: int = TEST_HORIZON_DAYS,
     dead_threshold: float | None = None,
     alive_threshold: float | None = None,
+    model_name: str = "Model",
 ):
     """Evaluate model predictions using standard classification metrics
 
@@ -1051,6 +1228,7 @@ def evaluate_model_predictions(
         horizon_days: Observation window length in days (defines what "alive" means)
         dead_threshold: Optional threshold for DEAD classification (if None, calculates from business rules)
         alive_threshold: Optional threshold for ALIVE classification (if None, calculates from business rules)
+        model_name: Name of the model for plots and output files
     """
 
     y_true = test_features["y_true_alive"].to_numpy(dtype=np.float64)
@@ -1166,7 +1344,10 @@ def evaluate_model_predictions(
     segment_df = create_segment_analysis(test_features)
 
     # Create plots (using thresholds already calculated above)
-    create_evaluation_plots(test_features, dead_threshold, alive_threshold, trained_model)
+    create_evaluation_plots(test_features, dead_threshold, alive_threshold, trained_model, model_name)
+
+    # Generate SHAP plots for XGBoost models
+    create_shap_plots(trained_model, test_features, model_name)
 
     # Log results
     log.info("=" * 80)

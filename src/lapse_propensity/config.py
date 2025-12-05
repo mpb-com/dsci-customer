@@ -32,8 +32,18 @@ MIN_TRANSACTION_COUNT = None
 
 DATA_DIR = Path(__file__).parent.parent.parent / "data"
 
-# Model configuration
-MODEL_CLASS_NAME = "ParetoEmpiricalSingleTrainSplit"  # Name of model class to use
+# Model and feature engineering configuration
+# ==============================================
+# To test a new model or feature set:
+# 1. Create your class in model.py (inherit from BaseLapseModel)
+# 2. Create your feature engineer in features.py (inherit from BaseFeatureEngineer)
+# 3. Update the class names below
+# 4. Run backtests or production pipeline as normal
+#
+# Available models: See model.py for available classes
+# Available feature engineers: See features.py for available classes
+MODEL_CLASS_NAME ="ParetoEmpiricalSingleTrainSplit"  # Name of model class to use
+FEATURE_ENGINEER_CLASS_NAME ="BTYDFeatureEngineer"  # Name of feature engineer class to use
 
 # Don't touch!
 PARETO_PENALIZER = 0.001
@@ -43,8 +53,17 @@ MAX_FREQUENCY_CUTOFF = 100  # Higher than this and we get numerical issues
 
 # Queries
 TRANSACTION_QUERY = """
-    SELECT customer_id,
-    DATETIME(transaction_completed_datetime) as txn_date
+    SELECT
+        customer_id,
+        DATETIME(transaction_completed_datetime) as txn_date,
+        transaction_type,
+        sold_sell_items,
+        total_buy_items,
+        delivery_charge_market,
+        buy_value_market,
+        total_sold_sell_value,
+        market,
+        ga_sub_channel
     FROM `mpb-data-science-dev-ab-602d.dsci_daw.STV`
     WHERE transaction_completed_datetime is not null
     """
